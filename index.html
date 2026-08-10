@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Experiment Clock</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: Arial, Helvetica, sans-serif;
+            background: #111827;
+            color: #f9fafb;
+        }
+
+        .panel {
+            width: min(620px, 92vw);
+            padding: 32px;
+            border: 1px solid #374151;
+            border-radius: 18px;
+            background: #1f2937;
+        }
+
+        h1 {
+            margin-top: 0;
+            font-size: 28px;
+        }
+
+        .label {
+            color: #9ca3af;
+            margin-bottom: 8px;
+        }
+
+        #clock {
+            font-family: Consolas, monospace;
+            font-size: clamp(42px, 10vw, 76px);
+            font-weight: bold;
+            letter-spacing: 0.02em;
+            margin: 12px 0 24px;
+        }
+
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 24px;
+        }
+
+        #status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ef4444;
+        }
+
+        #status-dot.connected {
+            background: #22c55e;
+        }
+
+        button {
+            border: none;
+            border-radius: 10px;
+            padding: 10px 16px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .details {
+            margin-top: 24px;
+            padding-top: 20px;
+            border-top: 1px solid #374151;
+            color: #d1d5db;
+            font-family: Consolas, monospace;
+            font-size: 14px;
+            line-height: 1.7;
+        }
+    </style>
+</head>
+
+<body>
+
+    <main class="panel">
+
+        <h1>Monotonic Experiment Clock</h1>
+
+        <div class="label">
+            Python server experiment time
+        </div>
+
+        <div id="clock">
+            0.000 s
+        </div>
+
+        <div class="status-row">
+            <div id="status-dot"></div>
+            <span id="status">Disconnected</span>
+        </div>
+
+        <button id="reset-button">
+            Reset Experiment Clock
+        </button>
+
+        <div class="details">
+            <div>
+                WebSocket updates received:
+                <span id="update-count">0</span>
+            </div>
+
+            <div>
+                Last server value:
+                <span id="last-server-value">0</span> ns
+            </div>
+        </div>
+
+    </main>
+
+
+    <script>
+        const clockElement = document.getElementById("clock");
+        const statusElement = document.getElementById("status");
+        const statusDot = document.getElementById("status-dot");
+        const updateCountElement = document.getElementById("update-count");
+        const lastServerValueElement =
+            document.getElementById("last-server-value");
+
+        let updateCount = 0;
+        let socket = null;
+
+
+        function connectClock() {
+
+            const websocketProtocol =
+                window.location.protocol === "https:" ? "wss:" : "ws:";
+
+            const websocketUrl =
+                `${websocketProtocol}//${window.location.host}/ws/clock`;
+
+            socket = new WebSocket(websocketUrl);
+
+
+            socket.onopen = function () {
+                statusElement.textContent = "Connected to Python clock";
+                statusDot.classList.add("connected");
+            };
+
+
+            socket.onmessage = function (event) {
+
+                const data = JSON.parse(event.data);
+
+                clockElement.textContent =
+                    `${data.elapsed_seconds.toFixed(3)} s`;
+
+                lastServerValueElement.textContent =
+                    data.elapsed_ns.toLocaleString();
+
+                updateCount++;
+
+                updateCountElement.textContent = updateCount;
+            };
+
+
+            socket.onclose = function () {
+
+                statusElement.textContent = "Disconnected - reconnecting...";
+                statusDot.classList.remove("connected");
+
+                setTimeout(connectClock, 1000);
+            };
+
+
+            socket.onerror = function () {
+                socket.close();
+            };
+        }
+
+
+        document
+            .getElementById("reset-button")
+            .addEventListener("click", async function () {
+
+                try {
+                    await fetch("/api/reset", {
+                        method: "POST"
+                    });
+                }
+                catch (error) {
+                    console.error("Could not reset clock:", error);
+                }
+            });
+
+
+        connectClock();
+    </script>
+
+</body>
+</html>
