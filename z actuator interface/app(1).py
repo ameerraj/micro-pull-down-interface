@@ -18,14 +18,13 @@ POLL_INTERVAL_SECONDS = 1.0
 DURATION_SECONDS = 60.0
 
 # Opening the COM port resets this controller.
-# 5 s worked reliably in the communication test.
 CONTROLLER_STARTUP_SECONDS = 5.0
 
 # Maximum time allowed for a response to P\n
 SERIAL_RESPONSE_TIMEOUT_SECONDS = 0.8
 
 BASE_DIR = Path(__file__).resolve().parent
-INDEX_FILE = BASE_DIR / "index.html"
+INDEX_FILE = BASE_DIR / "index_Zactuator_20aug.html"
 
 
 app = FastAPI(title="Linear Actuator Position Test")
@@ -58,6 +57,9 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# GLOBAL HARDWARE CONNECTION
+global_ser: Optional[serial.Serial] = None
+
 state = {
     "running": False,
     "connection": "Disconnected",
@@ -78,13 +80,8 @@ stop_event = asyncio.Event()
 def query_position(ser: serial.Serial) -> tuple[float, str]:
     """
     Send the actuator's P\\n command and return its numeric position.
-
-    Non-numeric lines are ignored. This makes the function tolerant of
-    messages such as "COM Port verbunden".
     """
-    # Do not allow an old/stale line to be mistaken for this request.
     ser.reset_input_buffer()
-
     ser.write(b"P\n")
     ser.flush()
 
@@ -108,12 +105,10 @@ def query_position(ser: serial.Serial) -> tuple[float, str]:
             continue
 
         try:
-            # Also tolerate a decimal comma if firmware is ever changed.
             position = float(text.replace(",", "."))
             return position, text
         except ValueError:
-            # Ignore informational/startup text and keep looking for
-            # a numeric position until the timeout expires.
+            print(f"DEBUG - Ignored non-numeric response: '{text}'")
             continue
 
 
@@ -122,14 +117,13 @@ async def publish_state():
 
 
 async def poll_actuator():
-    global state
-
-    ser = None
+    global state, global_ser
 
     try:
+        # Update state to clear the "Awaiting Manual Configuration" message
         state.update({
             "running": True,
-            "connection": f"Opening {SERIAL_PORT}",
+            "connection": f"Connected to {SERIAL_PORT}",
             "position_mm": None,
             "raw": None,
             "elapsed_seconds": 0.0,
@@ -137,26 +131,6 @@ async def poll_actuator():
             "sample_count": 0,
             "error": None,
         })
-        await publish_state()
-
-        # Opening the serial port can reset the Arduino controller.
-        ser = await asyncio.to_thread(
-            serial.Serial,
-            SERIAL_PORT,
-            BAUD_RATE,
-            timeout=SERIAL_RESPONSE_TIMEOUT_SECONDS,
-        )
-
-        state["connection"] = f"Connected to {SERIAL_PORT} — controller starting"
-        await publish_state()
-
-        # Let the controller finish its reset/startup sequence.
-        await asyncio.sleep(CONTROLLER_STARTUP_SECONDS)
-
-        # Remove startup text such as "COM Port verbunden".
-        await asyncio.to_thread(ser.reset_input_buffer)
-
-        state["connection"] = f"Connected to {SERIAL_PORT}"
         await publish_state()
 
         loop = asyncio.get_running_loop()
@@ -170,30 +144,24 @@ async def poll_actuator():
             if elapsed >= DURATION_SECONDS:
                 break
 
-            # Keep the polling cadence tied to the monotonic clock rather
-            # than sleeping one second after every serial transaction.
             wait_time = next_poll - now
             if wait_time > 0:
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=wait_time)
-                    break
+                    if stop_event.is_set():
+                        break
                 except asyncio.TimeoutError:
                     pass
 
-            request_time = loop.time()
-
             try:
-                position, raw_text = await asyncio.to_thread(query_position, ser)
-
+                position, raw_text = await asyncio.to_thread(query_position, global_ser)
                 elapsed = loop.time() - measurement_start
 
                 state.update({
                     "position_mm": position,
                     "raw": raw_text,
                     "elapsed_seconds": round(elapsed, 3),
-                    "remaining_seconds": round(
-                        max(0.0, DURATION_SECONDS - elapsed), 3
-                    ),
+                    "remaining_seconds": round(max(0.0, DURATION_SECONDS - elapsed), 3),
                     "sample_count": state["sample_count"] + 1,
                     "error": None,
                 })
@@ -207,65 +175,42 @@ async def poll_actuator():
 
             except Exception as exc:
                 elapsed = loop.time() - measurement_start
-
                 state.update({
                     "elapsed_seconds": round(elapsed, 3),
-                    "remaining_seconds": round(
-                        max(0.0, DURATION_SECONDS - elapsed), 3
-                    ),
+                    "remaining_seconds": round(max(0.0, DURATION_SECONDS - elapsed), 3),
                     "error": str(exc),
                 })
-
                 await publish_state()
 
-            # Schedule the next nominal 1-second boundary.
             next_poll += POLL_INTERVAL_SECONDS
-
-            # If a serial operation took unusually long, do not rapidly
-            # "catch up" with several immediate requests. Move to the next
-            # future interval instead.
             after_request = loop.time()
             if next_poll <= after_request:
-                missed = int(
-                    (after_request - next_poll) // POLL_INTERVAL_SECONDS
-                ) + 1
+                missed = int((after_request - next_poll) // POLL_INTERVAL_SECONDS) + 1
                 next_poll += missed * POLL_INTERVAL_SECONDS
 
+        # Reached the end of the duration
         elapsed = min(loop.time() - measurement_start, DURATION_SECONDS)
-
         state.update({
             "running": False,
             "elapsed_seconds": round(elapsed, 3),
-            "remaining_seconds": round(
-                max(0.0, DURATION_SECONDS - elapsed), 3
-            ),
-            "connection": f"Connected to {SERIAL_PORT}",
+            "remaining_seconds": round(max(0.0, DURATION_SECONDS - elapsed), 3),
         })
-
-        await publish_state()
-
-    except serial.SerialException as exc:
-        state.update({
-            "running": False,
-            "connection": "Serial connection failed",
-            "error": str(exc),
-        })
-        await publish_state()
 
     except Exception as exc:
         state.update({
             "running": False,
-            "connection": "Error",
             "error": str(exc),
         })
-        await publish_state()
 
     finally:
-        if ser is not None and ser.is_open:
-            await asyncio.to_thread(ser.close)
-
-        state["connection"] = "Disconnected"
+        # We NO LONGER close the serial port here! 
+        # This keeps the connection alive so you can start another measurement without resetting.
         state["running"] = False
+        if global_ser and global_ser.is_open:
+            state["connection"] = f"Connected to {SERIAL_PORT}"
+        else:
+            state["connection"] = "Disconnected"
+            
         await publish_state()
 
 
@@ -279,9 +224,59 @@ async def api_status():
     return state
 
 
+@app.post("/api/connect")
+async def api_connect():
+    """Handles the initial hardware connection and auto-reset."""
+    global global_ser, state
+
+    if global_ser is not None and global_ser.is_open:
+        return {"ok": True, "message": "Already connected."}
+
+    try:
+        state.update({
+            "connection": f"Opening {SERIAL_PORT}",
+            "error": None
+        })
+        await publish_state()
+
+        global_ser = await asyncio.to_thread(
+            serial.Serial,
+            SERIAL_PORT,
+            BAUD_RATE,
+            timeout=SERIAL_RESPONSE_TIMEOUT_SECONDS,
+        )
+
+        state["connection"] = f"Connected to {SERIAL_PORT} — controller starting"
+        await publish_state()
+
+        # Let the controller finish its reset/startup sequence.
+        await asyncio.sleep(CONTROLLER_STARTUP_SECONDS)
+
+        # Remove startup text such as "COM Port verbunden".
+        await asyncio.to_thread(global_ser.reset_input_buffer)
+
+        # Trigger the UI to ask for manual configuration
+        state["connection"] = "Awaiting Manual Configuration"
+        await publish_state()
+
+        return {"ok": True, "message": "Connected and awaiting configuration."}
+
+    except serial.SerialException as exc:
+        state.update({
+            "connection": "Serial connection failed",
+            "error": str(exc),
+        })
+        await publish_state()
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/api/start")
 async def api_start():
-    global measurement_task, stop_event
+    global measurement_task, stop_event, global_ser
+
+    # Check if the hardware was connected first
+    if not global_ser or not global_ser.is_open:
+        raise HTTPException(status_code=400, detail="Hardware is not connected. Please click Connect first.")
 
     if measurement_task is not None and not measurement_task.done():
         raise HTTPException(status_code=409, detail="Measurement is already running.")
@@ -311,16 +306,17 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
 
     try:
-        # Give a newly opened page the current state immediately.
         await websocket.send_json({"type": "state", **state})
 
-        # The browser does not need to send data; this receive loop simply
-        # keeps the WebSocket alive and lets us notice a clean disconnect.
         while True:
             await websocket.receive_text()
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-
     except Exception:
         manager.disconnect(websocket)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
