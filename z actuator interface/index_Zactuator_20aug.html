@@ -343,6 +343,10 @@
                     <button id="stopButton" class="stop" onclick="stopMeasurement()" disabled>
                         Stop
                     </button>
+
+                    <button id="exportButton" class="stop" onclick="exportCSV()" disabled>
+                        Export CSV
+                    </button>
                 </div>
 
                 <div id="message" class="message"></div>
@@ -376,6 +380,7 @@
     const connectButton = document.getElementById("connectButton");
     const startButton = document.getElementById("startButton");
     const stopButton = document.getElementById("stopButton");
+    const exportButton = document.getElementById("exportButton");
     const progressBar = document.getElementById("progressBar");
 
     const canvas = document.getElementById("chart");
@@ -434,6 +439,7 @@
         connectButton.disabled = isConnected || running;
         startButton.disabled = running || !isConnected;
         stopButton.disabled = !running;
+        exportButton.disabled = running || samples.length === 0;
 
         // Progress Bar
         const duration = Number(data.duration_seconds ?? 0);
@@ -520,6 +526,29 @@
         }
     }
 
+    function exportCSV() {
+        if (samples.length === 0) return;
+
+        // Create the CSV header
+        let csvContent = "Time (s),Position (mm)\n";
+        
+        // Loop through all collected samples and format them
+        samples.forEach(row => {
+            csvContent += `${row.time.toFixed(3)},${row.position.toFixed(4)}\n`;
+        });
+
+        // Create a blob and trigger the browser download
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        
+        link.setAttribute("href", url);
+        link.setAttribute("download", `actuator_run_${Date.now()}.csv`);
+        
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
 
     function connectWebSocket() {
         const protocol =
@@ -552,6 +581,7 @@
             connectButton.disabled = true;
             startButton.disabled = true;
             stopButton.disabled = true;
+            exportButton.disabled = true;
 
             setTimeout(connectWebSocket, 1500);
         };
