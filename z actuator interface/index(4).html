@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linear Actuator Position Test</title>
+
+    <style>
+        :root {
+            --bg: #f4f6f8;
+            --panel: #ffffff;
+            --text: #17212b;
+            --muted: #687684;
+            --border: #d9e0e6;
+            --accent: #1267d6;
+            --good: #16834a;
+            --warn: #a56300;
+            --danger: #b42318;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        .page {
+            width: min(1180px, calc(100% - 32px));
+            margin: 28px auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            margin: 0 0 6px 0;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 9px 13px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--panel);
+            font-size: 14px;
+            white-space: nowrap;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #87919a;
+        }
+
+        .dot.connected {
+            background: var(--good);
+        }
+
+        .dot.running {
+            background: var(--accent);
+        }
+
+        .dot.error {
+            background: var(--danger);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1.25fr 0.75fr;
+            gap: 18px;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .position-panel {
+            min-height: 220px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .eyebrow {
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .position-value {
+            font-size: clamp(54px, 9vw, 92px);
+            font-weight: 700;
+            letter-spacing: -0.04em;
+            line-height: 1;
+            margin: 18px 0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .position-unit {
+            font-size: 26px;
+            color: var(--muted);
+            font-weight: 500;
+            margin-left: 8px;
+        }
+
+        .small-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .metric {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px;
+        }
+
+        .metric-label {
+            color: var(--muted);
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+
+        .metric-value {
+            font-weight: 700;
+            font-size: 21px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        button {
+            border: 0;
+            border-radius: 8px;
+            padding: 11px 16px;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .start {
+            background: var(--accent);
+            color: white;
+        }
+
+        .stop {
+            background: #eef1f4;
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        .chart-panel {
+            margin-top: 18px;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .chart-title {
+            font-size: 17px;
+            font-weight: 700;
+        }
+
+        canvas {
+            width: 100%;
+            height: 320px;
+            display: block;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #fff;
+        }
+
+        .message {
+            margin-top: 12px;
+            min-height: 20px;
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .message.error {
+            color: var(--danger);
+        }
+
+        .progress {
+            width: 100%;
+            height: 8px;
+            background: #e9edf1;
+            border-radius: 999px;
+            overflow: hidden;
+            margin-top: 16px;
+        }
+
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            background: var(--accent);
+            transition: width 0.15s linear;
+        }
+
+        @media (max-width: 800px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+
+            .header {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="page">
+
+        <div class="header">
+            <div>
+                <h1>Linear Actuator Position Test</h1>
+                <div class="subtitle">
+                    COM3 · 9600 baud · Position request every 1 second
+                </div>
+            </div>
+
+            <div class="status-pill">
+                <span id="statusDot" class="dot"></span>
+                <span id="connectionText">Disconnected</span>
+            </div>
+        </div>
+
+        <div class="grid">
+
+            <div class="panel position-panel">
+                <div>
+                    <div class="eyebrow">Current position</div>
+
+                    <div class="position-value">
+                        <span id="position">—</span>
+                        <span class="position-unit">mm</span>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="small-row">
+                        <span id="rawValue">Raw: —</span>
+                        <span id="sampleCount">Samples: 0</span>
+                    </div>
+
+                    <div class="progress">
+                        <div id="progressBar" class="progress-bar"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="eyebrow">Measurement</div>
+
+                <div class="metrics" style="margin-top: 14px;">
+                    <div class="metric">
+                        <div class="metric-label">Elapsed</div>
+                        <div id="elapsed" class="metric-value">0.0 s</div>
+                    </div>
+
+                    <div class="metric">
+                        <div class="metric-label">Remaining</div>
+                        <div id="remaining" class="metric-value">—</div>
+                    </div>
+
+                    <div class="metric">
+                        <div class="metric-label">Poll interval</div>
+                        <div id="interval" class="metric-value">1.0 s</div>
+                    </div>
+
+                    <div class="metric">
+                        <div class="metric-label">Duration</div>
+                        <div id="duration" class="metric-value">—</div>
+                    </div>
+                </div>
+
+                <div class="controls">
+                    <button id="startButton" class="start" onclick="startMeasurement()">
+                        Start measurement
+                    </button>
+
+                    <button id="stopButton" class="stop" onclick="stopMeasurement()" disabled>
+                        Stop
+                    </button>
+                </div>
+
+                <div id="message" class="message"></div>
+            </div>
+
+        </div>
+
+        <div class="panel chart-panel">
+            <div class="chart-header">
+                <div class="chart-title">Position vs. elapsed time</div>
+                <div class="subtitle">Live position telemetry</div>
+            </div>
+
+            <canvas id="chart"></canvas>
+        </div>
+
+    </div>
+
+
+<script>
+    const positionEl = document.getElementById("position");
+    const rawEl = document.getElementById("rawValue");
+    const countEl = document.getElementById("sampleCount");
+    const elapsedEl = document.getElementById("elapsed");
+    const remainingEl = document.getElementById("remaining");
+    const intervalEl = document.getElementById("interval");
+    const durationEl = document.getElementById("duration");
+    const connectionEl = document.getElementById("connectionText");
+    const statusDot = document.getElementById("statusDot");
+    const messageEl = document.getElementById("message");
+    const startButton = document.getElementById("startButton");
+    const stopButton = document.getElementById("stopButton");
+    const progressBar = document.getElementById("progressBar");
+
+    const canvas = document.getElementById("chart");
+    const ctx = canvas.getContext("2d");
+
+    let samples = [];
+    let lastRunningState = false;
+
+
+    function setMessage(text, isError = false) {
+        messageEl.textContent = text || "";
+        messageEl.className = isError ? "message error" : "message";
+    }
+
+
+    function updateUI(data) {
+        const running = Boolean(data.running);
+
+        if (typeof data.position_mm === "number") {
+            positionEl.textContent = data.position_mm.toFixed(4);
+        }
+
+        rawEl.textContent = "Raw: " + (data.raw ?? "—");
+        countEl.textContent = "Samples: " + (data.sample_count ?? 0);
+
+        elapsedEl.textContent =
+            Number(data.elapsed_seconds ?? 0).toFixed(1) + " s";
+
+        remainingEl.textContent =
+            Number(data.remaining_seconds ?? 0).toFixed(1) + " s";
+
+        intervalEl.textContent =
+            Number(data.poll_interval_seconds ?? 1).toFixed(1) + " s";
+
+        durationEl.textContent =
+            Number(data.duration_seconds ?? 0).toFixed(0) + " s";
+
+        connectionEl.textContent = data.connection ?? "Disconnected";
+
+        statusDot.className = "dot";
+
+        if (data.error) {
+            statusDot.classList.add("error");
+        } else if (running) {
+            statusDot.classList.add("running");
+        } else if ((data.connection ?? "").startsWith("Connected")) {
+            statusDot.classList.add("connected");
+        }
+
+        startButton.disabled = running;
+        stopButton.disabled = !running;
+
+        const duration = Number(data.duration_seconds ?? 0);
+        const elapsed = Number(data.elapsed_seconds ?? 0);
+        const percent = duration > 0
+            ? Math.min(100, (elapsed / duration) * 100)
+            : 0;
+
+        progressBar.style.width = percent + "%";
+
+        if (data.error) {
+            setMessage(data.error, true);
+        } else if (running) {
+            setMessage("Measurement running.");
+        } else if (lastRunningState && !running) {
+            setMessage("Measurement finished.");
+        }
+
+        lastRunningState = running;
+    }
+
+
+    async function startMeasurement() {
+        samples = [];
+        drawChart();
+
+        positionEl.textContent = "—";
+        setMessage("Starting controller connection...");
+
+        try {
+            const response = await fetch("/api/start", {
+                method: "POST"
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.detail || "Could not start measurement.");
+            }
+
+        } catch (error) {
+            setMessage(error.message, true);
+        }
+    }
+
+
+    async function stopMeasurement() {
+        try {
+            await fetch("/api/stop", {
+                method: "POST"
+            });
+
+            setMessage("Stopping measurement...");
+
+        } catch (error) {
+            setMessage(error.message, true);
+        }
+    }
+
+
+    function connectWebSocket() {
+        const protocol =
+            window.location.protocol === "https:" ? "wss" : "ws";
+
+        const socket =
+            new WebSocket(`${protocol}://${window.location.host}/ws`);
+
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            updateUI(data);
+
+            if (
+                data.type === "sample" &&
+                typeof data.sample_position_mm === "number"
+            ) {
+                samples.push({
+                    time: Number(data.sample_elapsed_seconds),
+                    position: Number(data.sample_position_mm)
+                });
+
+                drawChart();
+            }
+        };
+
+        socket.onclose = () => {
+            connectionEl.textContent = "Web interface disconnected";
+            statusDot.className = "dot error";
+
+            setTimeout(connectWebSocket, 1500);
+        };
+    }
+
+
+    async function loadInitialState() {
+        try {
+            const response = await fetch("/api/status");
+            const data = await response.json();
+            updateUI(data);
+        } catch (error) {
+            setMessage("Could not load server status.", true);
+        }
+    }
+
+
+    function resizeCanvas() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+
+        canvas.width = Math.max(1, Math.round(rect.width * dpr));
+        canvas.height = Math.max(1, Math.round(rect.height * dpr));
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        drawChart();
+    }
+
+
+    function drawChart() {
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+
+        ctx.clearRect(0, 0, width, height);
+
+        const left = 62;
+        const right = 18;
+        const top = 18;
+        const bottom = 42;
+
+        const plotWidth = width - left - right;
+        const plotHeight = height - top - bottom;
+
+        ctx.font = "12px Arial";
+        ctx.fillStyle = "#687684";
+        ctx.strokeStyle = "#d9e0e6";
+        ctx.lineWidth = 1;
+
+        if (samples.length === 0) {
+            ctx.textAlign = "center";
+            ctx.fillText(
+                "Position samples will appear here.",
+                width / 2,
+                height / 2
+            );
+            return;
+        }
+
+        let xMax = Math.max(...samples.map(s => s.time), 1);
+
+        let yValues = samples.map(s => s.position);
+        let yMin = Math.min(...yValues);
+        let yMax = Math.max(...yValues);
+
+        if (yMin === yMax) {
+            const padding = Math.max(Math.abs(yMin) * 0.02, 0.01);
+            yMin -= padding;
+            yMax += padding;
+        } else {
+            const padding = (yMax - yMin) * 0.10;
+            yMin -= padding;
+            yMax += padding;
+        }
+
+        // Horizontal grid and Y labels
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+
+        for (let i = 0; i <= 4; i++) {
+            const fraction = i / 4;
+            const y = top + plotHeight * fraction;
+            const value = yMax - (yMax - yMin) * fraction;
+
+            ctx.beginPath();
+            ctx.moveTo(left, y);
+            ctx.lineTo(left + plotWidth, y);
+            ctx.stroke();
+
+            ctx.fillText(value.toFixed(4), left - 8, y);
+        }
+
+        // X labels
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+
+        for (let i = 0; i <= 5; i++) {
+            const fraction = i / 5;
+            const x = left + plotWidth * fraction;
+            const value = xMax * fraction;
+
+            ctx.fillText(value.toFixed(0) + " s", x, top + plotHeight + 9);
+        }
+
+        // Axis titles
+        ctx.save();
+        ctx.translate(16, top + plotHeight / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = "center";
+        ctx.fillText("Position (mm)", 0, 0);
+        ctx.restore();
+
+        // Position line
+        ctx.strokeStyle = "#1267d6";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+
+        samples.forEach((sample, index) => {
+            const x =
+                left + (sample.time / xMax) * plotWidth;
+
+            const y =
+                top +
+                ((yMax - sample.position) / (yMax - yMin)) *
+                plotHeight;
+
+            if (index === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+        });
+
+        ctx.stroke();
+
+        // Latest sample marker
+        const latest = samples[samples.length - 1];
+
+        const latestX =
+            left + (latest.time / xMax) * plotWidth;
+
+        const latestY =
+            top +
+            ((yMax - latest.position) / (yMax - yMin)) *
+            plotHeight;
+
+        ctx.fillStyle = "#1267d6";
+        ctx.beginPath();
+        ctx.arc(latestX, latestY, 4, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+
+    window.addEventListener("resize", resizeCanvas);
+
+    loadInitialState();
+    connectWebSocket();
+
+    requestAnimationFrame(resizeCanvas);
+</script>
+
+</body>
+</html>
