@@ -172,15 +172,21 @@
             font-size: 14px;
             font-weight: 700;
             cursor: pointer;
+            transition: opacity 0.2s;
         }
 
         button:disabled {
             opacity: 0.45;
             cursor: not-allowed;
         }
+        
+        .connect {
+            background: var(--accent);
+            color: white;
+        }
 
         .start {
-            background: var(--accent);
+            background: var(--good);
             color: white;
         }
 
@@ -220,10 +226,15 @@
             min-height: 20px;
             font-size: 13px;
             color: var(--muted);
+            font-weight: 600;
         }
 
         .message.error {
             color: var(--danger);
+        }
+        
+        .message.warn {
+            color: var(--warn);
         }
 
         .progress {
@@ -296,7 +307,7 @@
             </div>
 
             <div class="panel">
-                <div class="eyebrow">Measurement</div>
+                <div class="eyebrow">Measurement Controls</div>
 
                 <div class="metrics" style="margin-top: 14px;">
                     <div class="metric">
@@ -321,8 +332,12 @@
                 </div>
 
                 <div class="controls">
-                    <button id="startButton" class="start" onclick="startMeasurement()">
-                        Start measurement
+                    <button id="connectButton" class="connect" onclick="connectActuator()">
+                        Connect
+                    </button>
+                    
+                    <button id="startButton" class="start" onclick="startMeasurement()" disabled>
+                        Start
                     </button>
 
                     <button id="stopButton" class="stop" onclick="stopMeasurement()" disabled>
@@ -346,7 +361,6 @@
 
     </div>
 
-
 <script>
     const positionEl = document.getElementById("position");
     const rawEl = document.getElementById("rawValue");
@@ -358,6 +372,8 @@
     const connectionEl = document.getElementById("connectionText");
     const statusDot = document.getElementById("statusDot");
     const messageEl = document.getElementById("message");
+    
+    const connectButton = document.getElementById("connectButton");
     const startButton = document.getElementById("startButton");
     const stopButton = document.getElementById("stopButton");
     const progressBar = document.getElementById("progressBar");
@@ -369,14 +385,19 @@
     let lastRunningState = false;
 
 
-    function setMessage(text, isError = false) {
+    function setMessage(text, type = "normal") {
         messageEl.textContent = text || "";
-        messageEl.className = isError ? "message error" : "message";
+        if (type === "error") messageEl.className = "message error";
+        else if (type === "warn") messageEl.className = "message warn";
+        else messageEl.className = "message";
     }
 
 
     function updateUI(data) {
         const running = Boolean(data.running);
+        const connState = data.connection ?? "Disconnected";
+        const isConnected = connState.startsWith("Connected") || connState === "Awaiting Manual Configuration";
+        const isAwaitingConfig = connState === "Awaiting Manual Configuration";
 
         if (typeof data.position_mm === "number") {
             positionEl.textContent = data.position_mm.toFixed(4);
@@ -397,7 +418,7 @@
         durationEl.textContent =
             Number(data.duration_seconds ?? 0).toFixed(0) + " s";
 
-        connectionEl.textContent = data.connection ?? "Disconnected";
+        connectionEl.textContent = connState;
 
         statusDot.className = "dot";
 
@@ -405,13 +426,16 @@
             statusDot.classList.add("error");
         } else if (running) {
             statusDot.classList.add("running");
-        } else if ((data.connection ?? "").startsWith("Connected")) {
+        } else if (isConnected) {
             statusDot.classList.add("connected");
         }
 
-        startButton.disabled = running;
+        // Button States
+        connectButton.disabled = isConnected || running;
+        startButton.disabled = running || !isConnected;
         stopButton.disabled = !running;
 
+        // Progress Bar
         const duration = Number(data.duration_seconds ?? 0);
         const elapsed = Number(data.elapsed_seconds ?? 0);
         const percent = duration > 0
@@ -420,15 +444,42 @@
 
         progressBar.style.width = percent + "%";
 
+        // Messaging
         if (data.error) {
-            setMessage(data.error, true);
+            setMessage(data.error, "error");
+        } else if (isAwaitingConfig) {
+            setMessage("Actuator reset. Please configure manually, then press Start.", "warn");
         } else if (running) {
             setMessage("Measurement running.");
         } else if (lastRunningState && !running) {
             setMessage("Measurement finished.");
+        } else if (isConnected && !isAwaitingConfig) {
+            setMessage("Ready for measurement.");
+        } else {
+            setMessage(""); // Clear message if just disconnected
         }
 
         lastRunningState = running;
+    }
+
+    async function connectActuator() {
+        setMessage("Establishing connection and waiting for reset...");
+        connectButton.disabled = true;
+
+        try {
+            const response = await fetch("/api/connect", {
+                method: "POST"
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.detail || "Could not connect to actuator.");
+            }
+        } catch (error) {
+            setMessage(error.message, "error");
+            connectButton.disabled = false;
+        }
     }
 
 
@@ -437,7 +488,7 @@
         drawChart();
 
         positionEl.textContent = "—";
-        setMessage("Starting controller connection...");
+        setMessage("Starting measurement...");
 
         try {
             const response = await fetch("/api/start", {
@@ -451,7 +502,7 @@
             }
 
         } catch (error) {
-            setMessage(error.message, true);
+            setMessage(error.message, "error");
         }
     }
 
@@ -465,7 +516,7 @@
             setMessage("Stopping measurement...");
 
         } catch (error) {
-            setMessage(error.message, true);
+            setMessage(error.message, "error");
         }
     }
 
@@ -498,6 +549,9 @@
         socket.onclose = () => {
             connectionEl.textContent = "Web interface disconnected";
             statusDot.className = "dot error";
+            connectButton.disabled = true;
+            startButton.disabled = true;
+            stopButton.disabled = true;
 
             setTimeout(connectWebSocket, 1500);
         };
@@ -510,7 +564,7 @@
             const data = await response.json();
             updateUI(data);
         } catch (error) {
-            setMessage("Could not load server status.", true);
+            setMessage("Could not load server status.", "error");
         }
     }
 
@@ -573,7 +627,6 @@
             yMax += padding;
         }
 
-        // Horizontal grid and Y labels
         ctx.textAlign = "right";
         ctx.textBaseline = "middle";
 
@@ -590,7 +643,6 @@
             ctx.fillText(value.toFixed(4), left - 8, y);
         }
 
-        // X labels
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
 
@@ -602,7 +654,6 @@
             ctx.fillText(value.toFixed(0) + " s", x, top + plotHeight + 9);
         }
 
-        // Axis titles
         ctx.save();
         ctx.translate(16, top + plotHeight / 2);
         ctx.rotate(-Math.PI / 2);
@@ -610,19 +661,13 @@
         ctx.fillText("Position (mm)", 0, 0);
         ctx.restore();
 
-        // Position line
         ctx.strokeStyle = "#1267d6";
         ctx.lineWidth = 2;
         ctx.beginPath();
 
         samples.forEach((sample, index) => {
-            const x =
-                left + (sample.time / xMax) * plotWidth;
-
-            const y =
-                top +
-                ((yMax - sample.position) / (yMax - yMin)) *
-                plotHeight;
+            const x = left + (sample.time / xMax) * plotWidth;
+            const y = top + ((yMax - sample.position) / (yMax - yMin)) * plotHeight;
 
             if (index === 0) {
                 ctx.moveTo(x, y);
@@ -633,16 +678,9 @@
 
         ctx.stroke();
 
-        // Latest sample marker
         const latest = samples[samples.length - 1];
-
-        const latestX =
-            left + (latest.time / xMax) * plotWidth;
-
-        const latestY =
-            top +
-            ((yMax - latest.position) / (yMax - yMin)) *
-            plotHeight;
+        const latestX = left + (latest.time / xMax) * plotWidth;
+        const latestY = top + ((yMax - latest.position) / (yMax - yMin)) * plotHeight;
 
         ctx.fillStyle = "#1267d6";
         ctx.beginPath();
