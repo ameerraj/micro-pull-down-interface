@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Keithley DAQ6510 Live Monitor</title>
+
+  <style>
+    :root {
+      --background-primary: #ffffff;
+      --background-secondary: #f7f7f5;
+      --background-page: #efefec;
+      --border-primary: #deddd7;
+      --border-secondary: #c5c3bb;
+      --text-primary: #2c2c2a;
+      --text-secondary: #6f6e68;
+      --success: #639922;
+      --warning: #ba7517;
+      --danger: #a32d2d;
+      --radius-large: 10px;
+      --radius-medium: 6px;
+      --font-mono: Consolas, "Courier New", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      padding: 20px;
+      background: var(--background-page);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+    }
+
+    .wrap {
+      width: min(1200px, 100%);
+      margin: 0 auto;
+      overflow: hidden;
+      background: var(--background-primary);
+      border: 1px solid var(--border-primary);
+      border-radius: var(--radius-large);
+      box-shadow: 0 12px 35px rgba(0, 0, 0, 0.08);
+    }
+
+    .titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      background: var(--background-secondary);
+      border-bottom: 1px solid var(--border-primary);
+      flex-wrap: wrap;
+    }
+
+    .title-left,
+    .title-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .app-title {
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .led {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--danger);
+      flex: 0 0 auto;
+    }
+
+    .led.connected {
+      background: var(--success);
+      animation: blink 1.4s infinite;
+    }
+
+    .led.waiting {
+      background: var(--warning);
+      animation: blink 1.4s infinite;
+    }
+
+    @keyframes blink {
+      0%,
+      100% {
+        opacity: 1;
+      }
+      50% {
+        opacity: 0.3;
+      }
+    }
+
+    .muted {
+      font-size: 10px;
+      color: var(--text-secondary);
+    }
+
+    .status-message {
+      padding: 8px 14px;
+      font-size: 10px;
+      color: var(--text-secondary);
+      background: var(--background-secondary);
+      border-bottom: 1px solid var(--border-primary);
+    }
+
+    .status-message.running {
+      color: #3f6212;
+    }
+
+    .status-message.warning {
+      color: #854d0e;
+    }
+
+    .status-message.error {
+      color: #991b1b;
+    }
+
+    .status-message.stopped,
+    .status-message.completed {
+      color: #365314;
+      font-weight: 600;
+    }
+
+    .section-heading {
+      padding: 10px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--background-secondary);
+      border-top: 1px solid var(--border-primary);
+      border-bottom: 1px solid var(--border-primary);
+    }
+
+    .section-heading.first {
+      border-top: none;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+      padding: 9px 14px 4px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .legend-line {
+      width: 18px;
+      height: 3px;
+      border-radius: 2px;
+    }
+
+    .right {
+      margin-left: auto;
+    }
+
+    .chart-wrap {
+      position: relative;
+      width: 100%;
+      height: 350px;
+      padding: 4px 14px 10px;
+    }
+
+    .readouts {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      border-top: 1px solid var(--border-primary);
+    }
+
+    .readout {
+      min-width: 0;
+      padding: 9px 10px;
+      text-align: center;
+      border-right: 1px solid var(--border-primary);
+    }
+
+    .readout:last-child {
+      border-right: none;
+    }
+
+    .readout-label {
+      margin-bottom: 3px;
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+    }
+
+    .readout-value {
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 14px;
+      background: var(--background-secondary);
+      border-top: 1px solid var(--border-primary);
+      flex-wrap: wrap;
+    }
+
+    .button {
+      padding: 6px 12px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      background: var(--background-primary);
+      border: 1px solid var(--border-secondary);
+      border-radius: var(--radius-medium);
+      cursor: pointer;
+    }
+
+    .button:hover {
+      background: #ecece8;
+    }
+
+    .button-danger {
+      color: #791f1f;
+      font-weight: 600;
+      background: #fcebeb;
+      border-color: var(--danger);
+    }
+    
+    .button-danger:hover {
+      background: #f7d7d7;
+    }
+
+    .button-success {
+      color: #365314;
+      font-weight: 600;
+      background: #f0f9e8;
+      border-color: var(--success);
+    }
+    
+    .button-success:hover {
+      background: #e2f0d6;
+    }
+    
+    .button-primary {
+      color: #ffffff;
+      font-weight: 600;
+      background: #3b82f6;
+      border-color: #2563eb;
+    }
+    
+    .button-primary:hover {
+      background: #2563eb;
+    }
+
+    select {
+      padding: 3px 6px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      background: var(--background-primary);
+      border: 1px solid var(--border-secondary);
+      border-radius: 4px;
+    }
+
+    @media (max-width: 750px) {
+      body {
+        padding: 8px;
+      }
+
+      .readouts {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .readout {
+        border-bottom: 1px solid var(--border-primary);
+      }
+
+      .chart-wrap {
+        height: 300px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+
+    <div class="titlebar">
+      <div class="title-left">
+        <div class="led waiting" id="connection-led"></div>
+        <span class="app-title">Keithley DAQ6510 — 5-Channel Monitor</span>
+        <span class="muted" id="connection-status">Connecting to server...</span>
+      </div>
+
+      <div class="title-right">
+        <label class="muted">
+          Display window:
+          <select id="window-select">
+            <option value="60">60 seconds</option>
+            <option value="120">2 minutes</option>
+            <option value="300" selected>5 minutes</option>
+            <option value="600">10 minutes</option>
+          </select>
+        </label>
+        <span class="muted" id="clock">--:--:--</span>
+      </div>
+    </div>
+
+    <div class="status-message" id="daq-status">
+      Waiting for DAQ status...
+    </div>
+
+    <div class="legend-row">
+      <div class="legend-item"><div class="legend-line" style="background: #e74c3c"></div>CH 101</div>
+      <div class="legend-item"><div class="legend-line" style="background: #3498db"></div>CH 102</div>
+      <div class="legend-item"><div class="legend-line" style="background: #2ecc71"></div>CH 103</div>
+      <div class="legend-item"><div class="legend-line" style="background: #f1c40f"></div>CH 104</div>
+      <div class="legend-item"><div class="legend-line" style="background: #9b59b6"></div>CH 105</div>
+      <div class="legend-item right">Sequence: <span id="sequence-value">0</span></div>
+    </div>
+
+    <!-- VOLTAGE GRAPH -->
+    <div class="section-heading first">Voltage</div>
+    <div class="chart-wrap">
+      <canvas id="voltage-chart"></canvas>
+    </div>
+
+    <div class="readouts">
+      <div class="readout">
+        <div class="readout-label">CH 101 Voltage</div>
+        <div class="readout-value" id="voltage-101" style="color: #e74c3c">— V</div>
+      </div>
+      <div class="readout">
+        <div class="readout-label">CH 102 Voltage</div>
+        <div class="readout-value" id="voltage-102" style="color: #3498db">— V</div>
+      </div>
+      <div class="readout">
+        <div class="readout-label">CH 103 Voltage</div>
+        <div class="readout-value" id="voltage-103" style="color: #2ecc71">— V</div>
+      </div>
+      <div class="readout">
+        <div class="readout-label">CH 104 Voltage</div>
+        <div class="readout-value" id="voltage-104" style="color: #f1c40f">— V</div>
+      </div>
+      <div class="readout">
+        <div class="readout-label">CH 105 Voltage</div>
+        <div class="readout-value" id="voltage-105" style="color: #9b59b6">— V</div>
+      </div>
+    </div>
+
+    <!-- TEMPERATURE GRAPH -->
+    <div class="section-heading">Temperature</div>
+    <div class="chart-wrap">
+      <canvas id="temperature-chart"></canvas>
+    </div>
+
+    <div class="readouts">
+      <div class="readout">
+        <div class="readout-label">CH 101 Temperature</div>
+        <div class="readout-value" id="temperature-101" style="color: #e74c3c">— °C</div>
+      </div>
+      <div class="readout">
+        <div class="readout-label">CH 102 Temperature</div>
+        <div class="readout-value" id="temperature-102" style="color: #3498db">— °C</div>
+      </div>
+      <div class="readout">
+        <div class="readout-label">CH 103 Temperature</div>
+        <div class="readout-value" id="temperature-103" style="color: #2ecc71">— °C</div>
+      </div>
+      <div class="readout">
+        <div class="readout-label">CH 104 Temperature</div>
+        <div class="readout-value" id="temperature-104" style="color: #f1c40f">— °C</div>
+      </div>
+      <div class="readout">
+        <div class="readout-label">CH 105 Temperature</div>
+        <div class="readout-value" id="temperature-105" style="color: #9b59b6">— °C</div>
+      </div>
+    </div>
+
+    <!-- CONTROLS -->
+    <div class="controls">
+      <button class="button button-danger" id="stop-button" type="button">⏹ Stop DAQ</button>
+      <button class="button button-primary" id="save-csv-button" type="button" style="display: none">💾 Save to CSV</button>
+      
+      <button class="button" id="pause-button" type="button">⏸ Pause charts</button>
+      <button class="button" id="resume-button" type="button" style="display: none">▶ Resume charts</button>
+      <button class="button" id="clear-button" type="button">↺ Clear charts</button>
+      
+      <button class="button button-success right" id="reconnect-button" type="button" style="display: none">Reconnect</button>
+      <button class="button button-danger right" id="disconnect-button" type="button">Disconnect browser</button>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+
+  <script>
+    "use strict";
+
+    const CHANNELS = [101, 102, 103, 104, 105];
+    const COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#f1c40f", "#9b59b6"];
+
+    let socket = null;
+    let pingTimer = null;
+    let reconnectTimer = null;
+
+    let chartsPaused = false;
+    let manualDisconnect = false;
+    let windowSeconds = 300;
+
+    // Master array holding ALL received data for CSV export
+    const allMeasurements = [];
+    
+    // Arrays for chart rendering (these get pruned)
+    const timestamps = [];
+    const voltageData = { 101: [], 102: [], 103: [], 104: [], 105: [] };
+    const temperatureData = { 101: [], 102: [], 103: [], 104: [], 105: [] };
+
+    // DOM Elements
+    const connectionLed = document.getElementById("connection-led");
+    const connectionStatus = document.getElementById("connection-status");
+    const daqStatus = document.getElementById("daq-status");
+    
+    const stopButton = document.getElementById("stop-button");
+    const saveCsvButton = document.getElementById("save-csv-button");
+    const pauseButton = document.getElementById("pause-button");
+    const resumeButton = document.getElementById("resume-button");
+    const clearButton = document.getElementById("clear-button");
+    const reconnectButton = document.getElementById("reconnect-button");
+    const disconnectButton = document.getElementById("disconnect-button");
+    const windowSelect = document.getElementById("window-select");
+
+    // ========================================================
+    // CHART CONFIGURATION
+    // ========================================================
+    const voltageChart = new Chart(document.getElementById("voltage-chart"), {
+      type: "line",
+      data: {
+        labels: [],
+        datasets: CHANNELS.map((channel, index) => ({
+          label: `CH ${channel}`,
+          data: voltageData[channel],
+          borderColor: COLORS[index],
+          backgroundColor: COLORS[index],
+          borderWidth: 1.5,
+          pointRadius: 0,
+          pointHoverRadius: 3,
+          tension: 0.1,
+          spanGaps: true
+        }))
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 12, font: { family: "monospace" } } },
+          y: { ticks: { font: { family: "monospace" } }, title: { display: true, text: "Voltage (V)" } }
+        }
+      }
+    });
+
+    const temperatureChart = new Chart(document.getElementById("temperature-chart"), {
+      type: "line",
+      data: {
+        labels: [],
+        datasets: CHANNELS.map((channel, index) => ({
+          label: `CH ${channel}`,
+          data: temperatureData[channel],
+          borderColor: COLORS[index],
+          backgroundColor: COLORS[index],
+          borderWidth: 1.5,
+          pointRadius: 0,
+          pointHoverRadius: 3,
+          tension: 0.1,
+          spanGaps: true
+        }))
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 12, font: { family: "monospace" } } },
+          y: { ticks: { font: { family: "monospace" } }, title: { display: true, text: "Temperature (°C)" } }
+        }
+      }
+    });
+
+    // ========================================================
+    // DISPLAY FUNCTIONS
+    // ========================================================
+    function updateConnectionDisplay(state, text) {
+      connectionStatus.textContent = text;
+      connectionLed.className = "led";
+
+      if (state === "connected") {
+        connectionLed.classList.add("connected");
+      } else if (state === "waiting") {
+        connectionLed.classList.add("waiting");
+      }
+    }
+
+    function updateDaqStatus(data) {
+      const status = data.status || "unknown";
+      const message = data.message || "No DAQ status message.";
+
+      daqStatus.className = "status-message";
+      daqStatus.classList.add(status);
+      daqStatus.textContent = `DAQ: ${message}`;
+      
+      // If the DAQ process has stopped, allow saving the data
+      if (status === "stopped" || status === "completed") {
+        stopButton.style.display = "none";
+        saveCsvButton.style.display = "inline-block";
+      } else {
+        stopButton.style.display = "inline-block";
+        saveCsvButton.style.display = "none";
+      }
+    }
+
+    function formatVoltage(value) {
+      if (!Number.isFinite(value)) return "Invalid";
+      const absoluteValue = Math.abs(value);
+      if (absoluteValue !== 0 && (absoluteValue >= 1000000 || absoluteValue < 0.0001)) {
+        return `${value.toExponential(6)} V`;
+      }
+      return `${value.toFixed(6)} V`;
+    }
+
+    function formatTemperature(value) {
+      if (!Number.isFinite(value)) return "Invalid";
+      return `${value.toFixed(3)} °C`;
+    }
+
+    function pruneOldPoints() {
+      const cutoff = Date.now() - windowSeconds * 1000;
+      while (timestamps.length > 0 && timestamps[0].receivedAt < cutoff) {
+        timestamps.shift();
+        CHANNELS.forEach(channel => {
+          voltageData[channel].shift();
+          temperatureData[channel].shift();
+        });
+      }
+    }
+
+    function updateCharts() {
+      const labels = timestamps.map(item => item.label);
+      voltageChart.data.labels = labels;
+      temperatureChart.data.labels = labels;
+      voltageChart.update("none");
+      temperatureChart.update("none");
+    }
+
+    function addMeasurement(data) {
+      if (!data || !data.readings || !data.temperatures) return;
+
+      // Store in the master array for CSV export
+      allMeasurements.push(data);
+
+      const receivedAt = Date.now();
+      document.getElementById("sequence-value").textContent = data.sequence ?? "—";
+
+      CHANNELS.forEach(channel => {
+        const voltage = Number(data.readings[String(channel)]);
+        if (Number.isFinite(voltage)) {
+          voltageData[channel].push(voltage);
+          document.getElementById(`voltage-${channel}`).textContent = formatVoltage(voltage);
+        } else {
+          voltageData[channel].push(null);
+          document.getElementById(`voltage-${channel}`).textContent = "Invalid";
+        }
+
+        const temperature = Number(data.temperatures[String(channel)]);
+        if (Number.isFinite(temperature)) {
+          temperatureData[channel].push(temperature);
+          document.getElementById(`temperature-${channel}`).textContent = formatTemperature(temperature);
+        } else {
+          temperatureData[channel].push(null);
+          document.getElementById(`temperature-${channel}`).textContent = "Invalid";
+        }
+      });
+
+      let timeLabel = new Date().toLocaleTimeString();
+      if (typeof data.timestamp === "string" && data.timestamp.includes(" ")) {
+        timeLabel = data.timestamp.split(" ")[1];
+      }
+
+      timestamps.push({ label: timeLabel, receivedAt: receivedAt });
+
+      if (!chartsPaused) {
+        pruneOldPoints();
+        updateCharts();
+      }
+    }
+
+    // ========================================================
+    // CSV EXPORT
+    // ========================================================
+    function exportToCsv() {
+      if (allMeasurements.length === 0) {
+        alert("No data available to save.");
+        return;
+      }
+
+      // Create CSV Headers
+      let csvContent = "Timestamp,Sequence,Elapsed Seconds";
+      CHANNELS.forEach(channel => {
+        csvContent += `,CH ${channel} Voltage (V),CH ${channel} Temperature (C)`;
+      });
+      csvContent += "\n";
+
+      // Append data rows
+      allMeasurements.forEach(m => {
+        let row = `${m.timestamp},${m.sequence},${m.elapsed_seconds}`;
+        CHANNELS.forEach(channel => {
+          row += `,${m.readings[channel]},${m.temperatures[channel]}`;
+        });
+        csvContent += row + "\n";
+      });
+
+      // Trigger download
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `daq6510_export_${Date.now()}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    // ========================================================
+    // WEBSOCKET FUNCTIONS
+    // ========================================================
+    function processWebSocketMessage(event) {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (error) {
+        return;
+      }
+
+      if (data.type === "measurement") {
+        addMeasurement(data);
+        return;
+      }
+      if (data.type === "status") {
+        updateDaqStatus(data);
+        return;
+      }
+      if (data.type === "pong") return;
+    }
+
+    function startPingTimer() {
+      stopPingTimer();
+      pingTimer = window.setInterval(() => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send("ping");
+        }
+      }, 20000);
+    }
+
+    function stopPingTimer() {
+      if (pingTimer !== null) {
+        window.clearInterval(pingTimer);
+        pingTimer = null;
+      }
+    }
+
+    function scheduleReconnect() {
+      if (manualDisconnect || reconnectTimer !== null) return;
+      updateConnectionDisplay("waiting", "Reconnecting in 2 seconds...");
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connectSocket();
+      }, 2000);
+    }
+
+    function connectSocket() {
+      if (location.protocol === "file:") return;
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+
+      manualDisconnect = false;
+      reconnectButton.style.display = "none";
+      disconnectButton.style.display = "inline-block";
+      updateConnectionDisplay("waiting", "Connecting to WebSocket...");
+
+      const websocketProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const socketUrl = `${websocketProtocol}//${location.host}/ws`;
+
+      socket = new WebSocket(socketUrl);
+
+      socket.onopen = () => {
+        updateConnectionDisplay("connected", "Browser connected");
+        socket.send("browser-connected");
+        startPingTimer();
+      };
+
+      socket.onmessage = processWebSocketMessage;
+
+      socket.onerror = () => {
+        updateConnectionDisplay("disconnected", "WebSocket communication error");
+      };
+
+      socket.onclose = () => {
+        stopPingTimer();
+        socket = null;
+        reconnectButton.style.display = "inline-block";
+        disconnectButton.style.display = "none";
+
+        if (manualDisconnect) {
+          updateConnectionDisplay("disconnected", "Browser disconnected");
+        } else {
+          scheduleReconnect();
+        }
+      };
+    }
+
+    function disconnectSocket() {
+      manualDisconnect = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      stopPingTimer();
+
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send("disconnect");
+        window.setTimeout(() => { if (socket) socket.close(); }, 100);
+      } else if (socket) {
+        socket.close();
+      }
+      updateConnectionDisplay("disconnected", "Browser disconnected");
+    }
+
+    // ========================================================
+    // CHART CONTROL FUNCTIONS
+    // ========================================================
+    function pauseCharts() {
+      chartsPaused = true;
+      pauseButton.style.display = "none";
+      resumeButton.style.display = "inline-block";
+    }
+
+    function resumeCharts() {
+      chartsPaused = false;
+      pruneOldPoints();
+      updateCharts();
+      pauseButton.style.display = "inline-block";
+      resumeButton.style.display = "none";
+    }
+
+    function clearCharts() {
+      // Clear visual buffers
+      timestamps.length = 0;
+      CHANNELS.forEach(channel => {
+        voltageData[channel].length = 0;
+        temperatureData[channel].length = 0;
+      });
+      voltageChart.data.labels = [];
+      temperatureChart.data.labels = [];
+      voltageChart.update("none");
+      temperatureChart.update("none");
+      
+      // Clear the master record as well
+      allMeasurements.length = 0;
+    }
+
+    // ========================================================
+    // EVENT LISTENERS
+    // ========================================================
+    windowSelect.addEventListener("change", event => {
+      windowSeconds = Number(event.target.value);
+      pruneOldPoints();
+      updateCharts();
+    });
+
+    stopButton.addEventListener("click", () => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send("stop");
+      }
+    });
+
+    saveCsvButton.addEventListener("click", exportToCsv);
+    pauseButton.addEventListener("click", pauseCharts);
+    resumeButton.addEventListener("click", resumeCharts);
+    clearButton.addEventListener("click", clearCharts);
+    reconnectButton.addEventListener("click", connectSocket);
+    disconnectButton.addEventListener("click", disconnectSocket);
+
+    window.addEventListener("beforeunload", () => {
+      manualDisconnect = true;
+      stopPingTimer();
+      if (socket) socket.close();
+    });
+
+    window.setInterval(() => {
+      document.getElementById("clock").textContent = new Date().toLocaleTimeString();
+    }, 1000);
+
+    // Start WebSocket connection.
+    connectSocket();
+  </script>
+</body>
+</html>
