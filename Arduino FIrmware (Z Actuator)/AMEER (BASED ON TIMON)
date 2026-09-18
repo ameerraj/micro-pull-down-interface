@@ -1,4 +1,5 @@
-//16.Juni.2020 
+//CREATED : 16.Juni.2020 
+// LAST MODIFIED : 18 SEPT 2026 -AMEER
 //microsecondsdelay in der Interruptroutine auf 8 microsekunden
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
@@ -107,7 +108,7 @@ Serial.begin(9600);
   inputString.reserve(4);
   //Startanzeige mit Motorschalter
   zeige(2, 1, "HTM Reetz GmbH");
-  zeige(1, 2, "AU 21-0-227 R1.33");  delay(2500);
+  zeige(1, 2, "AU 21-0-227 R1.33 AMEER");  delay(2500);
   lcd.clear();
   Serial.println("COM Port verbunden");
   
@@ -221,7 +222,7 @@ void loop()
         lcd.setCursor(19, 3); lcd.print(" ");
         digitalWrite(dir, true);
         digitalWrite(13,0);
-       dirUpState = true;//öööööööööööööööööööööööööö
+       dirUpState = true; //######
         dirDownState = false;
         buttonState = 1;
         //schaltEmporState = true;
