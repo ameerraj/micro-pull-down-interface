@@ -213,7 +213,7 @@ void loop()
 
   }
   
-  if(((Extern)&&(Run))||(!Extern)){
+  if ((Extern && Run) || !Extern){
   //----  Schalter Empor
   if (haltOben == false) {
     buttonState = digitalRead(schaltEmpor);
