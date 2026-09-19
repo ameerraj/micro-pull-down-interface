@@ -143,16 +143,25 @@ void loop()
 {
 
   if (stringComplete) {
-    if (inputString.startsWith("E1")){
-      Extern = true;
-      Run = false;
-      count = 0;
-      //halt = false;
-      lcd.setCursor(19,1);
-      lcd.print("E");
-      lcd.setCursor(19,2);
-      lcd.print("X");
-    }
+if (inputString.startsWith("E1")) {
+
+    Extern = true;
+
+    // Safety: external mode always starts stopped
+    Run = false;
+    halt = true;
+    dirUpState = false;
+    dirDownState = false;
+
+    count = 0;
+
+    lcd.setCursor(19,1);
+    lcd.print("E");
+    lcd.setCursor(19,2);
+    lcd.print("X");
+}
+
+
     if (inputString.startsWith("E0")){
       Extern = false;
       Run = false;
