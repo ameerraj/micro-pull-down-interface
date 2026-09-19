@@ -42,12 +42,12 @@ boolean   schaltHinabState = false;
 const int pull = 11;
 const int dir  = 12;
 
-// HilfsVari
+// HilfsVariable
 int buttonState = 1;
 int potiState = 0;
 int potiStateAlt = 0;
 
-//Spezifika
+//Spezifikation
 volatile  long Z = 0;
 boolean motOn = true;
 boolean halt = false;
@@ -76,7 +76,8 @@ boolean stringComplete = false;  // whether the string is complete
 boolean Extern = false;
 boolean Run = false;
 
-void setup()//-----------------
+void setup()
+//-----------------
 {
   // Hardware
   for (int i = 2; i < 11; i++) {
