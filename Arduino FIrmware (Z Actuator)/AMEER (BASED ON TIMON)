@@ -178,7 +178,44 @@ if (inputString.startsWith("E1")) {
     }
     if (inputString.startsWith("R0")){
       Run = false;    
-    }    
+    }
+
+//Serial Command for Externally Activated Up Switch
+  if (inputString.startsWith("U1")) {
+
+    if (Extern && Run) {
+
+        // Read the upper limit switch BEFORE starting movement
+        endSchObenState = digitalRead(endSchOben);
+
+        if (endSchObenState) {
+
+            // Set motor direction to UP
+            digitalWrite(dir, HIGH);
+
+            dirUpState = true;
+            dirDownState = false;
+
+            // Allow Timer1 to generate STEP pulses
+            halt = false;
+
+            // Show UP arrow
+            lcd.setCursor(19, 0);
+            lcd.printByte(5);
+
+            lcd.setCursor(19, 3);
+            lcd.print(" ");
+        }
+        else {
+
+            // Upper limit already reached
+            halt = true;
+
+            dirUpState = false;
+            dirDownState = false;
+        }
+    }
+}
     // clear the string:
     inputString = "";
     stringComplete = false;
