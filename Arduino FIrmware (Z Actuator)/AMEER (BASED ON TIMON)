@@ -226,8 +226,9 @@ if (inputString.startsWith("E1")) {
   {
 
   }
-  
-  if ((Extern && Run) || !Extern){
+
+
+  if (!Extern) {
   //----  Schalter Empor
   if (haltOben == false) {
     buttonState = digitalRead(schaltEmpor);
@@ -253,9 +254,11 @@ if (inputString.startsWith("E1")) {
     halt = true;
     dirUpState = false;
     }
-  if(((Extern)&&(Run))||(!Extern)){ 
+
+// this block should only run when NOT in external mode
+  if (!Extern) {
  // buttonState = 1;
-  //----- Schalter Hinab
+  //----- Schalter Hinab (downwards)
   if (haltUnten == false){//************************************
      schaltHinabState = digitalRead(schaltHinab);
     if (!buttonState) {
