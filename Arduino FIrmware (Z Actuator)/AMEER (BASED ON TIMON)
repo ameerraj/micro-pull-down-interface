@@ -1,6 +1,9 @@
 //CREATED : 16.Juni.2020 
 // LAST MODIFIED : 18 SEPT 2026 -AMEER
 //microsecondsdelay in der Interruptroutine auf 8 microsekunden
+
+
+
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <TimerOne.h>
@@ -443,5 +446,9 @@ void serialEvent() {
       stringComplete = true;
     }
   }
-}     
+}   
+
+
+
+
 
