@@ -217,6 +217,44 @@ if (inputString.startsWith("E1")) {
         }
     }
 }
+
+// external mode down command
+if (inputString.startsWith("D1")) {
+
+    if (Extern && Run) {
+
+        // Read lower limit switch before allowing downward motion
+        endSchUntenState = digitalRead(endSchUnten);
+
+        // LOW means lower limit has been reached
+        if (!endSchUntenState) {
+
+            halt = true;
+
+            dirUpState = false;
+            dirDownState = false;
+        }
+        else {
+
+            // Set motor direction to DOWN
+            digitalWrite(dir, LOW);
+
+            dirUpState = false;
+            dirDownState = true;
+
+            // Allow Timer1 to generate STEP pulses
+            halt = false;
+
+            // Show DOWN arrow
+            lcd.setCursor(19, 3);
+            lcd.printByte(6);
+
+            lcd.setCursor(19, 0);
+            lcd.print(" ");
+        }
+    }
+}
+
     // clear the string:
     inputString = "";
     stringComplete = false;
