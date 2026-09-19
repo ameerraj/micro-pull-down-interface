@@ -326,7 +326,9 @@ if (inputString.startsWith("E1")) {
   buttonState = 1;
   digitalWrite(13, 0);
   
-  motorSchalter();
+  if (!Extern) {
+    motorSchalter();
+}
   }
 }
 
