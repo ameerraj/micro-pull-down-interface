@@ -79,6 +79,12 @@ boolean stringComplete = false;  // whether the string is complete
 boolean Extern = false;
 boolean Run = false;
 
+//"Hearbeat" setup Variables - Safety mechanism in External Mode
+unsigned long lastSerialCommand = 0;
+
+const unsigned long SERIAL_WARNING = 3000;   // warning for missing heartbeat 3 s
+const unsigned long SERIAL_TIMEOUT = 10000;  // shutoff for missing heartbeat 10 s
+
 void setup()
 //-----------------
 {
@@ -143,6 +149,15 @@ void loop()
 {
 
   if (stringComplete) {
+
+// hearbeat command, to be sent continuously during external mode control
+if (inputString.startsWith("K")) {
+
+    if (Extern) {
+        lastSerialCommand = millis();
+    }
+}
+
 if (inputString.startsWith("E1")) {
 
     Extern = true;
@@ -152,6 +167,9 @@ if (inputString.startsWith("E1")) {
     halt = true;
     dirUpState = false;
     dirDownState = false;
+
+  //heartbeat
+    lastSerialCommand = millis();
 
     count = 0;
 
@@ -175,6 +193,8 @@ if (inputString.startsWith("E1")) {
     }
     if (inputString.startsWith("R1")){
       Run = true;    
+  //heartbeat
+    lastSerialCommand = millis();
     }
     if (inputString.startsWith("R0")){
       Run = false;    
@@ -182,6 +202,9 @@ if (inputString.startsWith("E1")) {
 
 //Serial Command for Externally Activated Up Switch
   if (inputString.startsWith("U1")) {
+
+  //heartbeat
+    lastSerialCommand = millis();
 
     if (Extern && Run) {
 
@@ -221,6 +244,8 @@ if (inputString.startsWith("E1")) {
 // external mode down command
 if (inputString.startsWith("D1")) {
 
+  //heartbeat
+    lastSerialCommand = millis();
     if (Extern && Run) {
 
         // Read lower limit switch before allowing downward motion
@@ -252,6 +277,31 @@ if (inputString.startsWith("D1")) {
             lcd.setCursor(19, 0);
             lcd.print(" ");
         }
+    }
+}
+
+//check if hearbeat is missing for more than X amount of time
+//if yes first warning message, then shutoff
+if (Extern && Run) {
+
+    unsigned long serialSilence =
+        millis() - lastSerialCommand;
+
+    if (serialSilence > SERIAL_TIMEOUT) {
+
+        // Serious communication failure
+        Run = false;
+        halt = true;
+
+        dirUpState = false;
+        dirDownState = false;
+    }
+
+    else if (serialSilence > SERIAL_WARNING) {
+
+    // Warning only
+    lcd.setCursor(0, 2);
+    lcd.print("SERIAL WARNING : NO SIGNAL FROM EXTERNAL DEVICE, SHUTOFF IMMINENT ");
     }
 }
 
