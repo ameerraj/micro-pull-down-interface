@@ -188,6 +188,7 @@ if (inputString.startsWith("E1")) {
         // Read the upper limit switch BEFORE starting movement
         endSchObenState = digitalRead(endSchOben);
 
+//upper limit not yet reached
         if (endSchObenState) {
 
             // Set motor direction to UP
