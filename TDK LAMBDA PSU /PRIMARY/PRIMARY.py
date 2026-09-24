@@ -55,6 +55,7 @@ def shutdown_event():
         print("Shutting down: Disabling DC output.")
         psu.write("OUTP OFF")
         psu.write("SYST:REM LOC")
+        print("passing controls back to physical buttons")
 
         psu.close()
         
