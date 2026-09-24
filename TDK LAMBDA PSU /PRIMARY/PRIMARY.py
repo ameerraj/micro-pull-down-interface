@@ -54,8 +54,10 @@ def shutdown_event():
     if psu:
         print("Shutting down: Disabling DC output.")
         psu.write("OUTP OFF")
-        psu.close()
+        psu.write("SYST:REM LOC")
 
+        psu.close()
+        
 # --- API Endpoints ---
 @app.get("/api/status")
 def get_status():
