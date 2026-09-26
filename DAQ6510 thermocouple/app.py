@@ -38,12 +38,13 @@ NPLC = 1.0
 SCAN_TIMEOUT_SECONDS = 10.0
 VISA_TIMEOUT_MS = 5000
 
+# temperature = gain * measured Voltage (mV) + offset 
 TEMPERATURE_CALIBRATION = {
-    101: {"gain": 100.0, "offset": 0.0},
-    102: {"gain": 100.0, "offset": 0.0},
-    103: {"gain": 200.0, "offset": 0.0},
-    104: {"gain": 100.0, "offset": 0.0},
-    105: {"gain": 100.0, "offset": 0.0},
+    101: {"gain": 84.33, "offset": 10.78}, # thermocouple
+    102: {"gain": 84.33, "offset": 20.78},
+    103: {"gain": 84.33, "offset": 30.78},
+    104: {"gain": 84.33, "offset": 40.78},
+    105: {"gain": 84.33, "offset": 50.78},
 }
 
 class UnifiedHardwareApp:
