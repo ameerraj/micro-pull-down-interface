@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import pyvisa
 import serial
-import serial.tools.list_ports  # Added for port scanning
+import serial.tools.list_ports
 import threading
 import time
 import csv
@@ -12,14 +12,14 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 # ============================================================
-# HARDCODED SAFETY LIMITS & CONFIG (Ports removed for dynamic selection)
+# HARDCODED SAFETY LIMITS & CONFIG 
 # ============================================================
 HARDWARE_OVP = 26.0
 
 BAUD_RATE = 9600
 ACTUATOR_STARTUP_SECONDS = 5.0
 SERIAL_RESPONSE_TIMEOUT_SECONDS = 0.8
-POLL_INTERVAL_SECONDS = 1.0
+DEFAULT_POLL_INTERVAL = 1.0
 
 # ============================================================
 # THERMAL CONSTANTS
@@ -61,6 +61,7 @@ class UnifiedHardwareApp:
         self.csv_file = None
         self.csv_writer = None
         self.loop_iteration = 0  # Absolute timeline tracker
+        self.poll_interval = DEFAULT_POLL_INTERVAL
 
         # User-defined safety ceilings
         self.max_v_limit = 24.0
@@ -81,7 +82,7 @@ class UnifiedHardwareApp:
         self.temp_data = {ch: [] for ch in CHANNELS} 
         self.start_time = None
 
-        self.scan_ports() # Scan for ports before setting up UI
+        self.scan_ports() 
         self.setup_ui()
         
         # Start unified polling thread
@@ -90,7 +91,6 @@ class UnifiedHardwareApp:
         self.poll_thread.start()
 
     def scan_ports(self):
-        # 1. Scan for VISA resources (Keithley DAQ and TDK PSU)
         try:
             visa_resources = self.rm.list_resources()
             self.available_usb_visa = [r for r in visa_resources if "USB" in r]
@@ -100,13 +100,11 @@ class UnifiedHardwareApp:
             self.available_usb_visa = []
             self.available_serial_visa = []
 
-        # 2. Scan for standard COM ports (Arduino/Actuator)
         com_ports = serial.tools.list_ports.comports()
         self.available_com = []
         for p in com_ports:
-            # Arduinos often have "Arduino", "CH340" or "CP210" in their description
             if "Arduino" in p.description or "CH340" in p.description or "CP210" in p.description:
-                self.available_com.insert(0, p.device) # Put likely Arduinos at the top of the list
+                self.available_com.insert(0, p.device)
             else:
                 self.available_com.append(p.device)
 
@@ -174,7 +172,7 @@ class UnifiedHardwareApp:
         self.lbl_heat_rate.grid(row=6, column=0, columnspan=4, pady=2)
 
         # --- ACTUATOR CONTROLS ---
-        act_frame = ttk.LabelFrame(control_frame, text="Linear Actuator", padding=10)
+        act_frame = ttk.LabelFrame(control_frame, text="Linear Actuator & Logging", padding=10)
         act_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 5))
 
         ttk.Label(act_frame, text="Port:").grid(row=0, column=0, sticky="w")
@@ -190,13 +188,19 @@ class UnifiedHardwareApp:
         self.lbl_act_status.grid(row=2, column=0, columnspan=2, pady=5)
 
         self.lbl_pos = ttk.Label(act_frame, text="Pos: -- mm", font=("Arial", 14, "bold"), foreground="blue")
-        self.lbl_pos.grid(row=3, column=0, columnspan=2, pady=10)
+        self.lbl_pos.grid(row=3, column=0, columnspan=2, pady=5)
+
+        # Poll Interval Input
+        ttk.Label(act_frame, text="Poll Interval (s):").grid(row=4, column=0, sticky="w", pady=2)
+        self.entry_poll_interval = ttk.Entry(act_frame, width=8)
+        self.entry_poll_interval.grid(row=4, column=1, padx=5, pady=2, sticky="ew")
+        self.entry_poll_interval.insert(0, "1.0")
 
         self.btn_start_test = ttk.Button(act_frame, text="Start Data Logging", command=self.start_test, state=tk.DISABLED)
-        self.btn_start_test.grid(row=4, column=0, pady=5, padx=2, sticky="ew")
+        self.btn_start_test.grid(row=5, column=0, pady=5, padx=2, sticky="ew")
 
         self.btn_stop_test = ttk.Button(act_frame, text="Stop Logging", command=self.stop_test, state=tk.DISABLED)
-        self.btn_stop_test.grid(row=4, column=1, pady=5, padx=2, sticky="ew")
+        self.btn_stop_test.grid(row=5, column=1, pady=5, padx=2, sticky="ew")
 
         # --- DAQ CONTROLS ---
         daq_frame = ttk.LabelFrame(control_frame, text="Keithley DAQ6510", padding=10)
@@ -385,15 +389,12 @@ class UnifiedHardwareApp:
 
     def _connect_actuator(self, port):
         try:
-            # 1. Open the port to a TEMPORARY variable so the poll loop doesn't see it yet
             temp_serial = serial.Serial(port, BAUD_RATE, timeout=SERIAL_RESPONSE_TIMEOUT_SECONDS)
             self.log(f"Actuator port opened. Waiting {ACTUATOR_STARTUP_SECONDS}s for reset...")
             
-            # 2. Wait for the Arduino/Microcontroller to reboot
             time.sleep(ACTUATOR_STARTUP_SECONDS)
             temp_serial.reset_input_buffer()
             
-            # 3. NOW hand it over to the main app so the polling loop can start querying
             self.actuator = temp_serial
             
             def update_ui():
@@ -490,10 +491,8 @@ class UnifiedHardwareApp:
         self.daq.write(":INIT")
         self.wait_for_scan()
 
-        # Added REL parameter to ask for relative timestamps
         raw_data = self.daq.query_ascii_values(f':TRAC:DATA? 1, {len(CHANNELS)}, "defbuffer1", READ, REL')
         
-        # We expect 2 values per channel (reading, time, reading, time...)
         if len(raw_data) != len(CHANNELS) * 2:
             raise RuntimeError(f"Expected {len(CHANNELS) * 2} data points, received {len(raw_data)}")
         
@@ -516,11 +515,21 @@ class UnifiedHardwareApp:
             self.btn_start_test.config(state=tk.NORMAL)
 
     def start_test(self):
+        # Read and validate user-defined poll interval
+        try:
+            self.poll_interval = float(self.entry_poll_interval.get())
+            if self.poll_interval <= 0:
+                raise ValueError("Interval must be greater than zero.")
+        except ValueError as e:
+            messagebox.showerror("Input Error", f"Invalid poll interval: {e}")
+            return
+
         self.test_running = True
         self.btn_start_test.config(state=tk.DISABLED)
+        self.entry_poll_interval.config(state=tk.DISABLED)
         self.btn_stop_test.config(state=tk.NORMAL)
         
-        self.loop_iteration = 0  # Absolute timeline tracker
+        self.loop_iteration = 0  
         self.t_data.clear()
         self.v_data.clear()
         self.i_data.clear()
@@ -534,17 +543,17 @@ class UnifiedHardwareApp:
         self.csv_file = open(filename, mode='w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         
-        # Updated Headers to include HW timestamps
         headers = [
             "PC_Timestamp", "PC_Elapsed_s", 
             "PSU_Voltage_V", "PSU_Current_A", "Heating_Rate_Ks", 
-            "Actuator_Position_mm", "Actuator_HW_Time_ms"
+            "Actuator_Position_mm", "Actuator_HW_Time_ms",
+            "PSU_Latency_ms", "Actuator_Latency_ms", "DAQ_Latency_ms"
         ]
         for ch in CHANNELS:
             headers.extend([f"CH{ch}_Voltage_V", f"CH{ch}_Temp_C", f"CH{ch}_HW_Time_s"])
             
         self.csv_writer.writerow(headers)
-        self.log(f"Started synchronized logging to {filename}")
+        self.log(f"Started synchronized logging to {filename} (Interval: {self.poll_interval}s)")
 
     def stop_test(self):
         self.test_running = False
@@ -552,6 +561,7 @@ class UnifiedHardwareApp:
             self.csv_file.close()
             self.csv_file = None
         self.btn_start_test.config(state=tk.NORMAL)
+        self.entry_poll_interval.config(state=tk.NORMAL)
         self.btn_stop_test.config(state=tk.DISABLED)
         self.log("Data logging stopped.")
 
@@ -586,8 +596,8 @@ class UnifiedHardwareApp:
             current_time_str = datetime.now().isoformat()
             elapsed = loop_start - self.start_time if (self.test_running and self.start_time) else 0.0
             
-            # Initialize empty variables to handle missed connections gracefully
             v_meas, i_meas, heat_rate, pos_mm, act_time_ms = None, None, None, None, None
+            psu_latency_ms, act_latency_ms, daq_latency_ms = None, None, None
             daq_voltages = [None] * len(CHANNELS)
             daq_temps = [None] * len(CHANNELS)
             daq_times = [None] * len(CHANNELS)
@@ -595,8 +605,13 @@ class UnifiedHardwareApp:
             # 1. Query PSU
             if self.psu:
                 try:
+                    t_start_psu = time.perf_counter()
+                    
                     v_meas = float(self.psu.query("MEAS:VOLT?").strip())
                     i_meas = float(self.psu.query("MEAS:CURR?").strip())
+                    
+                    psu_latency_ms = (time.perf_counter() - t_start_psu) * 1000
+                    
                     power_watts = v_meas * i_meas
                     heat_rate = power_watts / (CRUCIBLE_MASS_KG * CRUCIBLE_CP)
                     
@@ -611,13 +626,17 @@ class UnifiedHardwareApp:
             # 2. Query Actuator
             if self.actuator:
                 try:
+                    t_start_act = time.perf_counter()
+                    
                     self.actuator.reset_input_buffer()
                     self.actuator.write(b"P\r\n") 
                     self.actuator.flush()
                     
                     raw = self.actuator.readline()
                     
-                    if raw:  # Only process if we didn't time out
+                    act_latency_ms = (time.perf_counter() - t_start_act) * 1000
+                    
+                    if raw:  
                         text = raw.decode("ascii", errors="replace").strip()
                         parts = text.split(",")
                         pos_mm = float(parts[0].replace(",", "."))
@@ -628,17 +647,20 @@ class UnifiedHardwareApp:
                         print("Actuator Warning: Serial read timed out (no data received).")
 
                 except Exception as e:
-                    # Print the exact error AND the raw text so you can see why it failed
                     print(f"Actuator Parse Error: {e} | Raw data received: {raw}")
 
             # 3. Query DAQ
             if self.daq and self.test_running:
                 try:
-                    # Unpack both voltages and hardware timestamps
-                    daq_voltages, daq_times = self.read_all_channels()
-                    daq_temps = [self.voltage_to_temperature(ch, v) for ch, v in zip(CHANNELS, daq_voltages)]
+                    t_start_daq = time.perf_counter()
                     
+                    daq_voltages, daq_times = self.read_all_channels()
+                    
+                    daq_latency_ms = (time.perf_counter() - t_start_daq) * 1000
+                    
+                    daq_temps = [self.voltage_to_temperature(ch, v) for ch, v in zip(CHANNELS, daq_voltages)]
                     temp_str = " | ".join([f"CH{ch}: {t:.1f}°C" for ch, t in zip(CHANNELS, daq_temps)])
+                    
                     self.root.after(0, lambda ts=temp_str: self.lbl_daq_temps.config(text=ts))
                 except Exception:
                     pass
@@ -653,10 +675,12 @@ class UnifiedHardwareApp:
                         i_meas if i_meas is not None else "", 
                         round(heat_rate, 3) if heat_rate is not None else "",
                         pos_mm if pos_mm is not None else "",
-                        act_time_ms if act_time_ms is not None else ""
+                        act_time_ms if act_time_ms is not None else "",
+                        round(psu_latency_ms, 2) if psu_latency_ms is not None else "",
+                        round(act_latency_ms, 2) if act_latency_ms is not None else "",
+                        round(daq_latency_ms, 2) if daq_latency_ms is not None else ""
                     ]
                     
-                    # Interleave DAQ voltage, temp, and hardware timestamp
                     for v, t, hw_time in zip(daq_voltages, daq_temps, daq_times):
                         row.extend([
                             v if v is not None else "", 
@@ -667,7 +691,6 @@ class UnifiedHardwareApp:
                     self.csv_writer.writerow(row)
                     self.csv_file.flush()
 
-                # Always plot against the PC `elapsed` time for uniform X-axis alignment
                 self.t_data.append(elapsed)
                 self.v_data.append(v_meas if v_meas is not None else float('nan'))
                 self.i_data.append(i_meas if i_meas is not None else float('nan'))
@@ -678,20 +701,17 @@ class UnifiedHardwareApp:
 
                 self.root.after(0, self.update_plots)
 
-            # 5. Enforce Exact Absolute Polling Frequency
+            # 5. Enforce Exact Absolute Polling Frequency using User Interval
             if self.test_running and self.start_time:
                 self.loop_iteration += 1
                 
-                # Calculate the exact timestamp this loop SHOULD finish
-                next_target_time = self.start_time + (self.loop_iteration * POLL_INTERVAL_SECONDS)
-                
+                next_target_time = self.start_time + (self.loop_iteration * self.poll_interval)
                 sleep_time = next_target_time - time.time()
                 
                 if sleep_time > 0:
                     time.sleep(sleep_time)
             else:
-                # Standard relative sleep if just idling/not actively logging
-                sleep_time = POLL_INTERVAL_SECONDS - (time.time() - loop_start)
+                sleep_time = DEFAULT_POLL_INTERVAL - (time.time() - loop_start)
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 
