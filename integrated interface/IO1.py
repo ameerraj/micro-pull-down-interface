@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import pyvisa
 import serial
+import serial.tools.list_ports  # Added for port scanning
 import threading
 import time
 import csv
@@ -11,12 +12,10 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 # ============================================================
-# HARDCODED SAFETY LIMITS & PORT CONFIG
+# HARDCODED SAFETY LIMITS & CONFIG (Ports removed for dynamic selection)
 # ============================================================
-PSU_PORT = "ASRL3::INSTR"
 HARDWARE_OVP = 26.0
 
-ACTUATOR_PORT = "COM3"
 BAUD_RATE = 9600
 ACTUATOR_STARTUP_SECONDS = 5.0
 SERIAL_RESPONSE_TIMEOUT_SECONDS = 0.8
@@ -31,7 +30,6 @@ CRUCIBLE_CP = 130.0        # J/(kg*K) for Iridium
 # ============================================================
 # DAQ6510 CONSTANTS & CALIBRATION
 # ============================================================
-DAQ_PORT = "USB0::0x05E6::0x6510::04437244::INSTR"
 CHANNELS = [101, 102, 103, 104, 105]
 CHANNEL_LIST = "(@101:105)"
 NPLC = 1.0
@@ -40,7 +38,7 @@ VISA_TIMEOUT_MS = 5000
 
 # temperature = gain * measured Voltage (mV) + offset 
 TEMPERATURE_CALIBRATION = {
-    101: {"gain": 84.33, "offset": 10.78}, # thermocouple
+    101: {"gain": 84.33, "offset": 10.78},
     102: {"gain": 84.33, "offset": 20.78},
     103: {"gain": 84.33, "offset": 30.78},
     104: {"gain": 84.33, "offset": 40.78},
@@ -82,12 +80,34 @@ class UnifiedHardwareApp:
         self.temp_data = {ch: [] for ch in CHANNELS} 
         self.start_time = None
 
+        self.scan_ports() # Scan for ports before setting up UI
         self.setup_ui()
         
         # Start unified polling thread
         self.polling_active = True
         self.poll_thread = threading.Thread(target=self.hardware_poll_loop, daemon=True)
         self.poll_thread.start()
+
+    def scan_ports(self):
+        # 1. Scan for VISA resources (Keithley DAQ and TDK PSU)
+        try:
+            visa_resources = self.rm.list_resources()
+            self.available_usb_visa = [r for r in visa_resources if "USB" in r]
+            self.available_serial_visa = [r for r in visa_resources if "ASRL" in r]
+        except Exception as e:
+            print(f"VISA Scan Error: {e}")
+            self.available_usb_visa = []
+            self.available_serial_visa = []
+
+        # 2. Scan for standard COM ports (Arduino/Actuator)
+        com_ports = serial.tools.list_ports.comports()
+        self.available_com = []
+        for p in com_ports:
+            # Arduinos often have "Arduino", "CH340" or "CP210" in their description
+            if "Arduino" in p.description or "CH340" in p.description or "CP210" in p.description:
+                self.available_com.insert(0, p.device) # Put likely Arduinos at the top of the list
+            else:
+                self.available_com.append(p.device)
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding=10)
@@ -101,8 +121,14 @@ class UnifiedHardwareApp:
         psu_frame = ttk.LabelFrame(control_frame, text="TDK-Lambda Power Supply", padding=10)
         psu_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
+        ttk.Label(psu_frame, text="Port:").grid(row=0, column=0, sticky="w", padx=2)
+        self.combo_psu_port = ttk.Combobox(psu_frame, values=self.available_serial_visa, width=15)
+        if self.available_serial_visa:
+            self.combo_psu_port.set(self.available_serial_visa[0])
+        self.combo_psu_port.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
         self.btn_psu_conn = ttk.Button(psu_frame, text="Connect PSU", command=self.connect_psu)
-        self.btn_psu_conn.grid(row=0, column=0, columnspan=4, pady=5, sticky="ew")
+        self.btn_psu_conn.grid(row=0, column=2, columnspan=2, pady=5, sticky="ew")
 
         ttk.Label(psu_frame, text="Max Allowable V:").grid(row=1, column=0, sticky="w")
         self.entry_max_v = ttk.Entry(psu_frame, width=8)
@@ -150,24 +176,35 @@ class UnifiedHardwareApp:
         act_frame = ttk.LabelFrame(control_frame, text="Linear Actuator", padding=10)
         act_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 5))
 
+        ttk.Label(act_frame, text="Port:").grid(row=0, column=0, sticky="w")
+        self.combo_act_port = ttk.Combobox(act_frame, values=self.available_com, width=12)
+        if self.available_com:
+            self.combo_act_port.set(self.available_com[0])
+        self.combo_act_port.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
         self.btn_act_conn = ttk.Button(act_frame, text="Connect Actuator", command=self.connect_actuator_thread)
-        self.btn_act_conn.grid(row=0, column=0, columnspan=2, pady=5, sticky="ew")
+        self.btn_act_conn.grid(row=1, column=0, columnspan=2, pady=5, sticky="ew")
 
         self.lbl_act_status = ttk.Label(act_frame, text="Status: Disconnected")
-        self.lbl_act_status.grid(row=1, column=0, columnspan=2, pady=5)
+        self.lbl_act_status.grid(row=2, column=0, columnspan=2, pady=5)
 
         self.lbl_pos = ttk.Label(act_frame, text="Pos: -- mm", font=("Arial", 14, "bold"), foreground="blue")
-        self.lbl_pos.grid(row=2, column=0, columnspan=2, pady=10)
+        self.lbl_pos.grid(row=3, column=0, columnspan=2, pady=10)
 
         self.btn_start_test = ttk.Button(act_frame, text="Start Data Logging", command=self.start_test, state=tk.DISABLED)
-        self.btn_start_test.grid(row=3, column=0, pady=5, padx=2, sticky="ew")
+        self.btn_start_test.grid(row=4, column=0, pady=5, padx=2, sticky="ew")
 
         self.btn_stop_test = ttk.Button(act_frame, text="Stop Logging", command=self.stop_test, state=tk.DISABLED)
-        self.btn_stop_test.grid(row=3, column=1, pady=5, padx=2, sticky="ew")
+        self.btn_stop_test.grid(row=4, column=1, pady=5, padx=2, sticky="ew")
 
         # --- DAQ CONTROLS ---
         daq_frame = ttk.LabelFrame(control_frame, text="Keithley DAQ6510", padding=10)
         daq_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 0))
+
+        self.combo_daq_port = ttk.Combobox(daq_frame, values=self.available_usb_visa)
+        if self.available_usb_visa:
+            self.combo_daq_port.set(self.available_usb_visa[0])
+        self.combo_daq_port.pack(fill=tk.X, pady=5)
 
         self.btn_daq_conn = ttk.Button(daq_frame, text="Connect DAQ", command=self.connect_daq_thread)
         self.btn_daq_conn.pack(fill=tk.X, pady=5)
@@ -235,9 +272,14 @@ class UnifiedHardwareApp:
 
     # ------------------- PSU METHODS -------------------
     def connect_psu(self):
+        selected_port = self.combo_psu_port.get().strip()
+        if not selected_port:
+            messagebox.showerror("Error", "Please select a COM/VISA port for the PSU.")
+            return
+            
         try:
             self.psu = self.rm.open_resource(
-                PSU_PORT, baud_rate=115200, data_bits=8,
+                selected_port, baud_rate=115200, data_bits=8,
                 parity=pyvisa.constants.Parity.none,
                 stop_bits=pyvisa.constants.StopBits.one,
                 read_termination="\r\n", write_termination="\r", timeout=2000
@@ -249,6 +291,7 @@ class UnifiedHardwareApp:
             self.psu.write("OUTP ON")
             
             self.btn_psu_conn.config(text="PSU Connected", state=tk.DISABLED)
+            self.combo_psu_port.config(state=tk.DISABLED)
             self.btn_apply.config(state=tk.NORMAL)
             self.btn_safe_off.config(state=tk.NORMAL)
             self.log("PSU connected. Output enabled at 0V / 0A.")
@@ -329,16 +372,28 @@ class UnifiedHardwareApp:
 
     # ------------------- ACTUATOR METHODS -------------------
     def connect_actuator_thread(self):
+        selected_port = self.combo_act_port.get().strip()
+        if not selected_port:
+            messagebox.showerror("Error", "Please select a COM port for the actuator.")
+            return
+            
         self.btn_act_conn.config(state=tk.DISABLED)
+        self.combo_act_port.config(state=tk.DISABLED)
         self.lbl_act_status.config(text="Status: Connecting & Resetting...")
-        threading.Thread(target=self._connect_actuator, daemon=True).start()
+        threading.Thread(target=self._connect_actuator, args=(selected_port,), daemon=True).start()
 
-    def _connect_actuator(self):
+    def _connect_actuator(self, port):
         try:
-            self.actuator = serial.Serial(ACTUATOR_PORT, BAUD_RATE, timeout=SERIAL_RESPONSE_TIMEOUT_SECONDS)
+            # 1. Open the port to a TEMPORARY variable so the poll loop doesn't see it yet
+            temp_serial = serial.Serial(port, BAUD_RATE, timeout=SERIAL_RESPONSE_TIMEOUT_SECONDS)
             self.log(f"Actuator port opened. Waiting {ACTUATOR_STARTUP_SECONDS}s for reset...")
+            
+            # 2. Wait for the Arduino/Microcontroller to reboot
             time.sleep(ACTUATOR_STARTUP_SECONDS)
-            self.actuator.reset_input_buffer()
+            temp_serial.reset_input_buffer()
+            
+            # 3. NOW hand it over to the main app so the polling loop can start querying
+            self.actuator = temp_serial
             
             def update_ui():
                 self.btn_act_conn.config(text="Actuator Connected")
@@ -348,17 +403,26 @@ class UnifiedHardwareApp:
             self.log("Actuator ready.")
         except Exception as e:
             self.log(f"Actuator connection failed: {e}")
-            self.root.after(0, lambda: self.btn_act_conn.config(state=tk.NORMAL))
+            self.root.after(0, lambda: [
+                self.btn_act_conn.config(state=tk.NORMAL),
+                self.combo_act_port.config(state=tk.NORMAL)
+            ])
 
     # ------------------- DAQ METHODS -------------------
     def connect_daq_thread(self):
+        selected_port = self.combo_daq_port.get().strip()
+        if not selected_port:
+            messagebox.showerror("Error", "Please select a VISA port for the DAQ.")
+            return
+            
         self.btn_daq_conn.config(state=tk.DISABLED)
+        self.combo_daq_port.config(state=tk.DISABLED)
         self.lbl_daq_status.config(text="Status: Connecting...")
-        threading.Thread(target=self._connect_daq, daemon=True).start()
+        threading.Thread(target=self._connect_daq, args=(selected_port,), daemon=True).start()
 
-    def _connect_daq(self):
+    def _connect_daq(self, port):
         try:
-            self.daq = self.rm.open_resource(DAQ_PORT)
+            self.daq = self.rm.open_resource(port)
             self.daq.timeout = VISA_TIMEOUT_MS
             self.daq.write_termination = "\n"
             self.daq.read_termination = "\n"
@@ -374,7 +438,10 @@ class UnifiedHardwareApp:
             self.root.after(0, update_ui)
         except Exception as e:
             self.log(f"DAQ Connection failed: {e}")
-            self.root.after(0, lambda: self.btn_daq_conn.config(state=tk.NORMAL))
+            self.root.after(0, lambda: [
+                self.btn_daq_conn.config(state=tk.NORMAL),
+                self.combo_daq_port.config(state=tk.NORMAL)
+            ])
 
     def configure_daq(self):
         self.daq.write(":ABOR")
@@ -540,22 +607,27 @@ class UnifiedHardwareApp:
                     pass
 
             # 2. Query Actuator
-            if self.actuator and self.test_running:
+            if self.actuator:
                 try:
                     self.actuator.reset_input_buffer()
-                    self.actuator.write(b"P\n")
+                    self.actuator.write(b"P\r\n") 
                     self.actuator.flush()
+                    
                     raw = self.actuator.readline()
-                    text = raw.decode("ascii", errors="replace").strip()
                     
-                    # Split string to see if Arduino passed a timestamp e.g., "10.50,45032"
-                    parts = text.split(",")
-                    pos_mm = float(parts[0].replace(",", "."))
-                    act_time_ms = int(parts[1]) if len(parts) > 1 else None
-                    
-                    self.root.after(0, lambda p=pos_mm: self.lbl_pos.config(text=f"Pos: {p:.2f} mm"))
-                except Exception:
-                    pass
+                    if raw:  # Only process if we didn't time out
+                        text = raw.decode("ascii", errors="replace").strip()
+                        parts = text.split(",")
+                        pos_mm = float(parts[0].replace(",", "."))
+                        act_time_ms = int(parts[1]) if len(parts) > 1 else None
+                        
+                        self.root.after(0, lambda p=pos_mm: self.lbl_pos.config(text=f"Pos: {p:.2f} mm"))
+                    else:
+                        print("Actuator Warning: Serial read timed out (no data received).")
+
+                except Exception as e:
+                    # Print the exact error AND the raw text so you can see why it failed
+                    print(f"Actuator Parse Error: {e} | Raw data received: {raw}")
 
             # 3. Query DAQ
             if self.daq and self.test_running:
