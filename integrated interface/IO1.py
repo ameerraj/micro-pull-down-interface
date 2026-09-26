@@ -60,6 +60,7 @@ class UnifiedHardwareApp:
         self.test_running = False
         self.csv_file = None
         self.csv_writer = None
+        self.loop_iteration = 0  # Absolute timeline tracker
 
         # User-defined safety ceilings
         self.max_v_limit = 24.0
@@ -519,6 +520,7 @@ class UnifiedHardwareApp:
         self.btn_start_test.config(state=tk.DISABLED)
         self.btn_stop_test.config(state=tk.NORMAL)
         
+        self.loop_iteration = 0  # Absolute timeline tracker
         self.t_data.clear()
         self.v_data.clear()
         self.i_data.clear()
@@ -676,10 +678,22 @@ class UnifiedHardwareApp:
 
                 self.root.after(0, self.update_plots)
 
-            # 5. Enforce Exact Polling Frequency
-            sleep_time = POLL_INTERVAL_SECONDS - (time.time() - loop_start)
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            # 5. Enforce Exact Absolute Polling Frequency
+            if self.test_running and self.start_time:
+                self.loop_iteration += 1
+                
+                # Calculate the exact timestamp this loop SHOULD finish
+                next_target_time = self.start_time + (self.loop_iteration * POLL_INTERVAL_SECONDS)
+                
+                sleep_time = next_target_time - time.time()
+                
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+            else:
+                # Standard relative sleep if just idling/not actively logging
+                sleep_time = POLL_INTERVAL_SECONDS - (time.time() - loop_start)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
     def on_closing(self):
         self.polling_active = False
