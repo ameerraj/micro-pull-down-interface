@@ -11,3 +11,9 @@ Heat rate = (V * I) * HEAT dissipation value/ (crucible mass * cruccible heat ca
 Assumed
 CRUCIBLE_MASS_KG = 0.0098  # 9.8g
 CRUCIBLE_CP = 130.0 
+
+
+
+IO2 - multithreaded
+
+io3 - multithreaded + PID control mechanism
