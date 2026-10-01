@@ -548,7 +548,10 @@ class UnifiedHardwareApp:
     def voltage_to_temperature(self, channel, voltage):
         cal = TEMPERATURE_CALIBRATION.get(channel)
         if not cal: return 0.0
-        return voltage * cal["gain"] + cal["offset"]
+        #recevied values are in Voltage, this conversion function is using mV
+        voltage_mv = voltage * 1000
+        #returning temperature
+        return voltage_mv * cal["gain"] + cal["offset"]
 
     # ------------------- LOGGING & TEST CONTROL -------------------
     def check_enable_test(self):
