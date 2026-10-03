@@ -247,6 +247,23 @@ void loop() {
         LPosi(1, 3, 4, String(wert));
       }
     }
+      if (inputString.startsWith("N") ) {
+      if (Extern) {
+        halt = true;
+        dirUpState = false;
+        dirDownState = false;
+
+        // Clear the up and down arrow glyphs on column 19
+        lcd.setCursor(19, 0);
+        lcd.print(" ");
+        lcd.setCursor(19, 3);
+        lcd.print(" ");
+      }
+    }
+
+    inputString = "";
+    stringComplete = false;
+  } 
 
     inputString = "";
     stringComplete = false;
