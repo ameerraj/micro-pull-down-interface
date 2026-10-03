@@ -103,7 +103,7 @@ void setup() {
   lcd.home();
 
   Serial.begin(9600);
-  inputString.reserve(4);
+  inputString.reserve(16);
 
   zeige(2, 1, "HTM Reetz GmbH");
   zeige(1, 2, "AU 21-0-227 R1.33 AMEER");
