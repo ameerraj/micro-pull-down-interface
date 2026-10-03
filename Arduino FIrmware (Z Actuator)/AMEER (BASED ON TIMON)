@@ -2,8 +2,6 @@
 // LAST MODIFIED : 18 SEPT 2026 -AMEER
 //microsecondsdelay in der Interruptroutine auf 8 microsekunden
 
-
-
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <TimerOne.h>
@@ -21,9 +19,10 @@ uint8_t toup[8] = {0x1f, 0x4, 0xa, 0x15, 0x4, 0x4, 0x4};
 uint8_t todown[8]  = {0x4, 0x4, 0x4, 0x15, 0xa, 0x4, 0x1f};
 uint8_t up[8] = {0x4, 0xa, 0x15, 0x4, 0x4, 0x4, 0x4};
 uint8_t down[8] = {0x4, 0x4, 0x4, 0x4, 0x15, 0xa, 0x4};
-uint8_t retarrow[8] = {	0x1, 0x1, 0x5, 0x9, 0x1f, 0x8, 0x4};
+uint8_t retarrow[8] = { 0x1, 0x1, 0x5, 0x9, 0x1f, 0x8, 0x4};
 
 LiquidCrystal_I2C lcd(0x27, 20, 4); // set the LC
+
 // Hardware
 const int links  = 9;
 boolean   linksState = false;
@@ -50,16 +49,14 @@ int buttonState = 1;
 int potiState = 0;
 int potiStateAlt = 0;
 
-//Spezifikation
-volatile  long Z = 0;
+// Spezifikation
+volatile long Z = 0;
 boolean motOn = true;
 boolean halt = false;
 boolean haltEndSch = false;
 boolean haltOben = false;
 boolean haltUnten = false;
-//float Zzeig = 0;
-//char zZeig[7] = "";
-unsigned long interruptInterval = 42850000;// Hausnummer
+unsigned long interruptInterval = 42850000;
 float count = 0L;
 float tick = 1.0 / 7000.0;
 boolean arbeitState = true;
@@ -67,32 +64,23 @@ boolean mittelState = false;
 boolean eilState = false;
 boolean validWert = true;
 boolean validF = false;
-boolean dirUpState = false; // true = Empor
+boolean dirUpState = false;   // true = Empor
 boolean dirDownState = false; // true = Hinab
 boolean endUntenAble = true;
 int hinabState = false;
 int wert = 0;
 int zeile = 0;
 
-String inputString = "";         // a String to hold incoming data
-boolean stringComplete = false;  // whether the string is complete
+String inputString = "";
+boolean stringComplete = false;
 boolean Extern = false;
 boolean Run = false;
 
-//"Hearbeat" setup Variables - Safety mechanism in External Mode
-unsigned long lastSerialCommand = 0;
-
-const unsigned long SERIAL_WARNING = 3000;   // warning for missing heartbeat 3 s
-const unsigned long SERIAL_TIMEOUT = 10000;  // shutoff for missing heartbeat 10 s
-
-void setup()
-//-----------------
-{
-  // Hardware
+void setup() {
   for (int i = 2; i < 11; i++) {
     pinMode(i, INPUT_PULLUP);
     delay(10);
-    digitalWrite(i,HIGH);
+    digitalWrite(i, HIGH);
     delay(10);
   }
 
@@ -100,12 +88,11 @@ void setup()
   pinMode(dir, OUTPUT);
   pinMode(13, OUTPUT);
 
-  // initialize the lcd
-  lcd.init();                      
+  lcd.init();                        
   lcd.backlight();
 
   // Sonderzeichen
-  lcd.createChar(0, bell);// Zeichen Doppelbuchstabe "in"
+  lcd.createChar(0, bell);
   lcd.createChar(1, note);
   lcd.createChar(2, clock);
   lcd.createChar(3, toup);
@@ -115,22 +102,22 @@ void setup()
   lcd.createChar(7, retarrow);
   lcd.home();
 
-Serial.begin(9600);
+  Serial.begin(9600);
   inputString.reserve(4);
-  //Startanzeige mit Motorschalter
+
   zeige(2, 1, "HTM Reetz GmbH");
-  zeige(1, 2, "AU 21-0-227 R1.33 AMEER");  delay(2500);
+  zeige(1, 2, "AU 21-0-227 R1.33 AMEER");
+  delay(2500);
   lcd.clear();
   Serial.println("COM Port verbunden");
   
-    schaltEmporState = !digitalRead(schaltEmpor);
-    schaltHinabState = !digitalRead(schaltHinab); 
-  while ((schaltEmporState)||(schaltHinabState))
-  { 
+  schaltEmporState = !digitalRead(schaltEmpor);
+  schaltHinabState = !digitalRead(schaltHinab); 
+  while (schaltEmporState || schaltHinabState) { 
     motorSchalter();
     lcd.setCursor(0, 1);
     lcd.print(" Motorschalter auf");
-    lcd.setCursor(3,2);
+    lcd.setCursor(3, 2);
     lcd.print(">Aus< stellen");
   }
   lcd.clear();
@@ -141,260 +128,170 @@ Serial.begin(9600);
 
   lcd.setCursor(0, 3);
   lcd.print("F     Pos");
-  Timer1.initialize(4285000 / wert); //
-  Timer1.attachInterrupt( timerIsr );
+  Timer1.initialize(4285000 / wert);
+  Timer1.attachInterrupt(timerIsr);
 }
-//___________________________________________________________
-void loop()
-{
 
+void loop() {
   if (stringComplete) {
+    if (inputString.startsWith("E1")) {
+      Extern = true;
+      Run = false;
+      halt = true;
+      dirUpState = false;
+      dirDownState = false;
+      count = 0;
 
-// hearbeat command, to be sent continuously during external mode control
-if (inputString.startsWith("K")) {
-
-    if (Extern) {
-        lastSerialCommand = millis();
+      lcd.setCursor(19, 1);
+      lcd.print("E");
+      lcd.setCursor(19, 2);
+      lcd.print("X");
     }
-}
 
-if (inputString.startsWith("E1")) {
-
-    Extern = true;
-
-    // Safety: external mode always starts stopped
-    Run = false;
-    halt = true;
-    dirUpState = false;
-    dirDownState = false;
-
-  //heartbeat
-    lastSerialCommand = millis();
-
-    count = 0;
-
-    lcd.setCursor(19,1);
-    lcd.print("E");
-    lcd.setCursor(19,2);
-    lcd.print("X");
-}
-
-
-    if (inputString.startsWith("E0")){
+    if (inputString.startsWith("E0")) {
       Extern = false;
       Run = false;
-      lcd.setCursor(19,1);
+      lcd.setCursor(19, 1);
       lcd.print(" ");
-      lcd.setCursor(19,2);
+      lcd.setCursor(19, 2);
       lcd.print(" ");
-    }    
-    if (inputString.startsWith("P")){
-       Serial.println(String(count, 4));
+    }   
+
+    if (inputString.startsWith("P")) {
+      Serial.println(String(count, 4));
     }
-    if (inputString.startsWith("R1")){
+
+    if (inputString.startsWith("R1")) {
       Run = true;    
-  //heartbeat
-    lastSerialCommand = millis();
     }
-    if (inputString.startsWith("R0")){
+
+    if (inputString.startsWith("R0")) {
       Run = false;    
     }
 
-//Serial Command for Externally Activated Up Switch
-  if (inputString.startsWith("U1")) {
-
-  //heartbeat
-    lastSerialCommand = millis();
-
-    if (Extern && Run) {
-
-        // Read the upper limit switch BEFORE starting movement
+    if (inputString.startsWith("U1")) {
+      if (Extern && Run) {
         endSchObenState = digitalRead(endSchOben);
-
-//upper limit not yet reached
         if (endSchObenState) {
+          digitalWrite(dir, HIGH);
+          dirUpState = true;
+          dirDownState = false;
+          halt = false;
 
-            // Set motor direction to UP
-            digitalWrite(dir, HIGH);
-
-            dirUpState = true;
-            dirDownState = false;
-
-            // Allow Timer1 to generate STEP pulses
-            halt = false;
-
-            // Show UP arrow
-            lcd.setCursor(19, 0);
-            lcd.printByte(5);
-
-            lcd.setCursor(19, 3);
-            lcd.print(" ");
+          lcd.setCursor(19, 0);
+          lcd.printByte(5);
+          lcd.setCursor(19, 3);
+          lcd.print(" ");
+        } else {
+          halt = true;
+          dirUpState = false;
+          dirDownState = false;
         }
-        else {
-
-            // Upper limit already reached
-            halt = true;
-
-            dirUpState = false;
-            dirDownState = false;
-        }
+      }
     }
-}
 
-// external mode down command
-if (inputString.startsWith("D1")) {
-
-  //heartbeat
-    lastSerialCommand = millis();
-    if (Extern && Run) {
-
-        // Read lower limit switch before allowing downward motion
+    if (inputString.startsWith("D1")) {
+      if (Extern && Run) {
         endSchUntenState = digitalRead(endSchUnten);
-
-        // LOW means lower limit has been reached
         if (!endSchUntenState) {
+          halt = true;
+          dirUpState = false;
+          dirDownState = false;
+        } else {
+          digitalWrite(dir, LOW);
+          dirUpState = false;
+          dirDownState = true;
+          halt = false;
 
-            halt = true;
-
-            dirUpState = false;
-            dirDownState = false;
+          lcd.setCursor(19, 3);
+          lcd.printByte(6);
+          lcd.setCursor(19, 0);
+          lcd.print(" ");
         }
-        else {
-
-            // Set motor direction to DOWN
-            digitalWrite(dir, LOW);
-
-            dirUpState = false;
-            dirDownState = true;
-
-            // Allow Timer1 to generate STEP pulses
-            halt = false;
-
-            // Show DOWN arrow
-            lcd.setCursor(19, 3);
-            lcd.printByte(6);
-
-            lcd.setCursor(19, 0);
-            lcd.print(" ");
-        }
-    }
-}
-
-//check if hearbeat is missing for more than X amount of time
-//if yes first warning message, then shutoff
-if (Extern && Run) {
-
-    unsigned long serialSilence =
-        millis() - lastSerialCommand;
-
-    if (serialSilence > SERIAL_TIMEOUT) {
-
-        // Serious communication failure
-        Run = false;
-        halt = true;
-
-        dirUpState = false;
-        dirDownState = false;
+      }
     }
 
-    else if (serialSilence > SERIAL_WARNING) {
-
-    // Warning only
-    lcd.setCursor(0, 2);
-    lcd.print("SERIAL WARNING : NO SIGNAL FROM EXTERNAL DEVICE, SHUTOFF IMMINENT ");
-    }
-}
-
-    // clear the string:
     inputString = "";
     stringComplete = false;
   }  
- //------ Position Nullen  
+
+  // Position Nullen  
   linksState = digitalRead(links);
   if (linksState == 0) {
     count = 0;
     linksState = false;
   }
-  //-----  Wertübernahme
+
+  // Wertuebernahme
   if (halt == true) {
     lcd.noBlink();
     rechtsState = digitalRead(rechts);
     if (rechtsState == 0) {
       validF = true;
-      LPosi(1, 3, 4, String(wert) );
+      LPosi(1, 3, 4, String(wert));
       rechtsState = 1;
-      if (arbeitState)  Timer1.setPeriod(8570000 / wert);
-      if (mittelState)  Timer1.setPeriod(8570000 / wert);
-      if (eilState) Timer1.setPeriod(8570 / wert);
+      if (arbeitState) Timer1.setPeriod(8570000 / wert);
+      if (mittelState) Timer1.setPeriod(8570000 / wert);
+      if (eilState)    Timer1.setPeriod(8570 / wert);
     }
   }
-  //----- Vorschub Band Hoch
+
+  // Vorschub Band Hoch
   if (halt == true) {
     hochState = digitalRead(hoch);
     if (hochState == 0) {
-      if (mittelState)arbeitsGang();
-      if (eilState)mittelGang();
+      if (mittelState) arbeitsGang();
+      if (eilState)    mittelGang();
       delay(250);
       hochState = 1;
     }
   }
-  //----- Vorschub Band Runter
+
+  // Vorschub Band Runter
   if (halt == true) {
     runterState = digitalRead(runter);
     if (runterState == 0) {
-      if (mittelState)eilGang();
-      if (arbeitState)mittelGang();
+      if (mittelState) eilGang();
+      if (arbeitState) mittelGang();
       delay(250);
       runterState = 1;
     }
   }
-//motorSchalter();
-  {
-
-  }
-
 
   if (!Extern) {
-  //----  Schalter Empor
-  if (haltOben == false) {
-    buttonState = digitalRead(schaltEmpor);
+    // Schalter Empor
+    if (haltOben == false) {
+      buttonState = digitalRead(schaltEmpor);
       if (!buttonState) {
-        lcd.setCursor(19, 0); lcd.printByte(5); //Pfeil empor
+        lcd.setCursor(19, 0); lcd.printByte(5);
         lcd.setCursor(19, 3); lcd.print(" ");
         digitalWrite(dir, true);
-        digitalWrite(13,0);
-       dirUpState = true; //######
+        digitalWrite(13, 0);
+        dirUpState = true;
         dirDownState = false;
         buttonState = 1;
-        //schaltEmporState = true;
         if (haltEndSch) {
           halt = false;
           haltUnten = false;
           haltEndSch = false;
         }
-  }
-  }  }
-    
-  
-  else{
+      }
+    }  
+  } else {
     halt = true;
     dirUpState = false;
-    }
+  }
 
-// this block should only run when NOT in external mode
   if (!Extern) {
- // buttonState = 1;
-  //----- Schalter Hinab (downwards)
-  if (haltUnten == false){//************************************
-     schaltHinabState = digitalRead(schaltHinab);
-    if (!buttonState) {
-        lcd.setCursor(19, 3); lcd.printByte(6); // Pfeil hinab
+    // Schalter Hinab
+    if (haltUnten == false) {
+      schaltHinabState = digitalRead(schaltHinab);
+      if (!buttonState) {
+        lcd.setCursor(19, 3); lcd.printByte(6);
         lcd.setCursor(19, 0); lcd.print(" ");
         digitalWrite(dir, false);
-      //  digitalWrite(13,1);
         dirUpState = true;
         dirDownState = false;
-       // hinabState = 1;
         schaltHinabState = true;
 
         if (haltEndSch) {
@@ -402,73 +299,69 @@ if (Extern && Run) {
           haltOben = false;
           haltEndSch = false;
         }
+      }
+    } else {
+      halt = true;
+      dirDownState = false;
     }
-  }
-  else{
-    halt = true;
-    dirDownState = false;
-  }
   
-  //-------  Endschalter Oben
-  if (dirUpState) {
-    endSchObenState = digitalRead(endSchOben);
-        if (!endSchObenState) {
-          lcd.setCursor(19, 0); lcd.printByte(3);
-          //lcd.setCursor(19, 3); lcd.print(" ");
+    // Endschalter Oben
+    if (dirUpState) {
+      endSchObenState = digitalRead(endSchOben);
+      if (!endSchObenState) {
+        lcd.setCursor(19, 0); lcd.printByte(3);
+      }
+    }
+
+    // Endschalter Unten
+    if (dirDownState) {
+      endSchUntenState = digitalRead(endSchUnten);
+      if (!endSchUntenState) {
+        lcd.setCursor(19, 3); lcd.printByte(4);
+        lcd.setCursor(19, 0); lcd.print(" ");
+      }
+    }
+
+    // Poti auslesen
+    if (halt == true) {
+      potiState = analogRead(A0);
+      if (abs(potiStateAlt - potiState) > 5) {
+        potiStateAlt = potiState;
+        if (arbeitState) {
+          wert = map(potiState, 0, 1023, 1, 100);
         }
+        if (mittelState) {
+          wert = map(potiState, 0, 1023, 100, 1000);
+        }
+        if (eilState) {
+          wert = map(potiState, 0, 1023, 1, 45);
+        }
+        for (int i = 0; i < 4; i++) LPosi(13, i, 5, " ");
+        LPosi(14, zeile, 4, String(wert));
+     
+        lcd.setCursor(13, zeile);
+        lcd.print(">");      
+        validWert = true;
       }
-  //------  Endschalter Unten
-  if (dirDownState) {
-    endSchUntenState = digitalRead(endSchUnten);
-        if (!endSchUntenState){
-          lcd.setCursor(19, 3); lcd.printByte(4);
-          lcd.setCursor(19, 0); lcd.print(" ");
-       }
-  }
-  //------Poti auslesen
-  if (halt == true) {
-    potiState = analogRead(A0);
-    if (abs(potiStateAlt - potiState) > 5) {
-      potiStateAlt = potiState;
-      if (arbeitState) {
-        wert = map(potiState, 0, 1023, 1, 100);
-      }
-      if (mittelState) {
-        wert = map(potiState, 0, 1023, 100, 1000);
-      }
-      if (eilState) {
-        wert = map(  potiState, 0, 1023, 1, 45);
-      }
-      for(int i=0;i<4;i++)LPosi (13,i,5," ");
-      LPosi (14, zeile, 4, String(wert));
-   
-      lcd.setCursor(13,zeile);
-      lcd.print(">");      
-      validWert = true;
     }
-  }
-  LPosi(10, 3, 8, String(count, 3)); 
-  delay(200);
-  buttonState = 1;
-  digitalWrite(13, 0);
-  
-  if (!Extern) {
+
+    LPosi(10, 3, 8, String(count, 3)); 
+    delay(200);
+    buttonState = 1;
+    digitalWrite(13, 0);
     motorSchalter();
-}
   }
 }
 
-// Ende Loop______________________________________________
-void timerIsr()
-{
+void timerIsr() {
   if (halt == false) {
-    if ((dirUpState)&&(endSchObenState)) {
+    if (dirUpState && endSchObenState) {
       digitalWrite(pull, HIGH);
       delayMicroseconds(8);
       digitalWrite(pull, LOW);
       count = count + tick;
     }
-    if ((dirDownState)&&(endSchUntenState)) {
+    if (dirDownState && endSchUntenState) {
       digitalWrite(pull, HIGH);
       delayMicroseconds(8);
       digitalWrite(pull, LOW);
@@ -477,118 +370,101 @@ void timerIsr()
   }
   delayMicroseconds(5);
 }
-// LCD Löschen und Neubeschreiben
-void LPosi(int x, int y, int L, String LL)
-{
+
+void LPosi(int x, int y, int L, String LL) {
   lcd.setCursor(x, y);
-  for (int i = 0; i < L; i++)lcd.print(" ");
+  for (int i = 0; i < L; i++) lcd.print(" ");
   lcd.setCursor(x, y);
   lcd.print(LL);
 }
-//LCD Beschreiben
-void zeige (int x, int y, String txt ) {
+
+void zeige(int x, int y, String txt) {
   lcd.setCursor(x, y);
   lcd.print(txt);
 }
-// Vorschubbereiche
-//___________________________
-void arbeitsGang () {
-  LPosi(2, 0, 10, "1..100\344/m"); lcd.printByte(0); lcd.print("   "); //
+
+void arbeitsGang() {
+  LPosi(2, 0, 10, "1..100\344/m"); lcd.printByte(0); lcd.print("   ");
   LPosi(1, 3, 4, ">");
   validWert = false;
   arbeitState = true;
   eilState = false;
   mittelState = false;
   zeile = 0;
-        for(int i=0;i<4;i++)LPosi (13,i,5,"");
-        lcd.setCursor(13,zeile);
-      lcd.print(">");
+  for (int i = 0; i < 4; i++) LPosi(13, i, 5, "");
+  lcd.setCursor(13, zeile);
+  lcd.print(">");
 }
-//_____________________________
 
 void mittelGang() {
-  LPosi(0, 1, 10, "100..1000\344/m"); lcd.printByte(0); lcd.print("   "); //
+  LPosi(0, 1, 10, "100..1000\344/m"); lcd.printByte(0); lcd.print("   ");
   LPosi(1, 3, 4, "");
   validWert = false;
   mittelState = true;
   eilState = false;
   arbeitState = false;
   zeile = 1;
-        for(int i=0;i<4;i++)LPosi (13,i,5,"");
-      lcd.setCursor(13,zeile);
-      lcd.print(">");
+  for (int i = 0; i < 4; i++) LPosi(13, i, 5, "");
+  lcd.setCursor(13, zeile);
+  lcd.print(">");
 }
-//_____________________________
 
 void eilGang() {
-  LPosi(2, 2, 10, "1..45mm/m"); lcd.printByte(0); lcd.print("   "); //
+  LPosi(2, 2, 10, "1..45mm/m"); lcd.printByte(0); lcd.print("   ");
   LPosi(1, 3, 4, "");
   validWert = false;
   eilState = true;
   arbeitState = false;
   mittelState = false;
   zeile = 2;
-        for(int i=0;i<4;i++)LPosi (13,i,5,"");
-        lcd.setCursor(13,zeile);
-      lcd.print(">");
+  for (int i = 0; i < 4; i++) LPosi(13, i, 5, "");
+  lcd.setCursor(13, zeile);
+  lcd.print(">");
 }
-//_______________________________
 
-void motorSchalter()
-{   
-    //lcd.clear();
-    schaltEmporState = !digitalRead(schaltEmpor);
-    schaltHinabState = !digitalRead(schaltHinab);
+void motorSchalter() {   
+  schaltEmporState = !digitalRead(schaltEmpor);
+  schaltHinabState = !digitalRead(schaltHinab);
       
-    if ((!schaltEmporState)&&(!schaltHinabState))
-    {
-      halt=true;
-      dirUpState = false;
-      dirDownState = false;
-      lcd.setCursor(19,3);
-      lcd.print(" ");
-      lcd.setCursor(19,0);
-      lcd.print(" ");
-      lcd.setCursor(15,zeile);
-      motorSchState=1;
-    }    
-     if (schaltEmporState)
-     {
-      dirUpState = true; 
-      dirDownState = false;
-       digitalWrite(dir, true);      
-      halt = false;      
-      lcd.setCursor(19, 0); lcd.printByte(5); // Pfeil    
-      motorSchState = 2;
-      lcd.noBlink();
+  if (!schaltEmporState && !schaltHinabState) {
+    halt = true;
+    dirUpState = false;
+    dirDownState = false;
+    lcd.setCursor(19, 3);
+    lcd.print(" ");
+    lcd.setCursor(19, 0);
+    lcd.print(" ");
+    lcd.setCursor(15, zeile);
+    motorSchState = 1;
+  }    
+  if (schaltEmporState) {
+    dirUpState = true; 
+    dirDownState = false;
+    digitalWrite(dir, true);      
+    halt = false;      
+    lcd.setCursor(19, 0); 
+    lcd.printByte(5);
+    motorSchState = 2;
+    lcd.noBlink();
+  }
+  if (schaltHinabState) {
+    dirUpState = false;
+    dirDownState = true; 
+    digitalWrite(dir, false);      
+    halt = false;   
+    lcd.setCursor(19, 3);
+    lcd.printByte(6);
+    motorSchState = 3;
+    lcd.noBlink();
+  }
 }
-     if (schaltHinabState)
-     {
-      dirUpState = false;
-      dirDownState = true; 
-       digitalWrite(dir, false);      
-      halt = false;   
-      lcd.setCursor(19, 3);
-      lcd.printByte(6); // Pfeil hinab
-      motorSchState = 3;
-      lcd.noBlink();
-     }
-}
+
 void serialEvent() {
   while (Serial.available()) {
-    // get the new byte:
     char inChar = (char)Serial.read();
-    // add it to the inputString:
     inputString += inChar;
-    // if the incoming character is a newline, set a flag so the main loop can
-    // do something about it:
     if (inChar == '\n') {
       stringComplete = true;
     }
   }
-}   
-
-
-
-
-
+}
