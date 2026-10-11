@@ -19,7 +19,7 @@ class StandaloneActuatorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Arduino Actuator Controller & Logger")
-        self.root.geometry("650x520") 
+        self.root.geometry("680x520") 
         
         # Hardware Thread Lock
         self.actuator_lock = threading.Lock()
@@ -37,6 +37,7 @@ class StandaloneActuatorApp:
 
         self.scan_ports() 
         self.setup_ui()
+        self.bind_shortcuts()
         
         # Start background polling thread for live position updates
         self.polling_active = True
@@ -62,6 +63,10 @@ class StandaloneActuatorApp:
         # --- ACTUATOR CONTROLS FRAME ---
         act_frame = ttk.LabelFrame(main_frame, text="Arduino Motor Control & Logging", padding=10)
         act_frame.pack(fill=tk.BOTH, expand=False, pady=(0, 10))
+
+        # Configure equal column weights for balanced layout
+        for i in range(4):
+            act_frame.columnconfigure(i, weight=1)
 
         # Row 0: Port & Connection
         ttk.Label(act_frame, text="Port:").grid(row=0, column=0, sticky="w", pady=5)
@@ -99,15 +104,18 @@ class StandaloneActuatorApp:
         self.btn_send_speed = ttk.Button(act_frame, text="Set Speed", state=tk.DISABLED, command=self.send_speed_command)
         self.btn_send_speed.grid(row=3, column=2, columnspan=2, sticky="ew", padx=1, pady=5)
 
-        # Row 4: Motion Controls (Up, Pause, Down)
+        # Row 4: Motion Controls (Up, Pause, Down, Pos "0")
         self.btn_up = ttk.Button(act_frame, text="▲ UP (U1)", state=tk.DISABLED, command=lambda: self.send_actuator_command("U1"))
         self.btn_up.grid(row=4, column=0, sticky="ew", padx=1, pady=5)
         
         self.btn_pause = ttk.Button(act_frame, text="⏹ PAUSE (N)", state=tk.DISABLED, command=lambda: self.send_actuator_command("N"))
-        self.btn_pause.grid(row=4, column=1, columnspan=2, sticky="ew", padx=1, pady=5)
+        self.btn_pause.grid(row=4, column=1, sticky="ew", padx=1, pady=5)
         
         self.btn_down = ttk.Button(act_frame, text="▼ DOWN (D1)", state=tk.DISABLED, command=lambda: self.send_actuator_command("D1"))
-        self.btn_down.grid(row=4, column=3, sticky="ew", padx=1, pady=5)
+        self.btn_down.grid(row=4, column=2, sticky="ew", padx=1, pady=5)
+
+        self.btn_zero = ttk.Button(act_frame, text='Pos "0" (Z)', state=tk.DISABLED, command=lambda: self.send_actuator_command("Z"))
+        self.btn_zero.grid(row=4, column=3, sticky="ew", padx=1, pady=5)
 
         # Row 5: Status and Position Readout
         self.lbl_act_status = ttk.Label(act_frame, text="Status: Disconnected")
@@ -134,6 +142,19 @@ class StandaloneActuatorApp:
 
         self.log_text = tk.Text(log_frame, height=10, state=tk.DISABLED)
         self.log_text.pack(fill=tk.BOTH, expand=True)
+
+    def bind_shortcuts(self):
+        # Bind keyboard arrow keys globally to the root window
+        self.root.bind("<Up>", self.on_key_up)
+        self.root.bind("<Down>", self.on_key_down)
+
+    def on_key_up(self, event=None):
+        if str(self.btn_up["state"]) == tk.NORMAL:
+            self.send_actuator_command("U1")
+
+    def on_key_down(self, event=None):
+        if str(self.btn_down["state"]) == tk.NORMAL:
+            self.send_actuator_command("D1")
 
     def log(self, message):
         def append():
@@ -173,7 +194,7 @@ class StandaloneActuatorApp:
                 widgets = [
                     self.btn_e1, self.btn_e0, self.rb_s1, self.rb_s2, self.rb_s3,
                     self.speed_entry, self.btn_send_speed, self.btn_up,
-                    self.btn_pause, self.btn_down, self.btn_start_test
+                    self.btn_pause, self.btn_down, self.btn_zero, self.btn_start_test
                 ]
                 for w in widgets:
                     w.config(state=tk.NORMAL)
