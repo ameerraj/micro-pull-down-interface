@@ -41,7 +41,7 @@ TEMPERATURE_CALIBRATION = {
     102: {"gain": 84.33, "offset": 10.78},
     103: {"gain": 84.33, "offset": 10.78},
     104: {"gain": 84.33, "offset": 10.78},
-    105: {"gain": 84.33, "offset": 10.78}, #crucible thermocouple
+    105: {"gain": 84.33, "offset": 10.78}, # crucible thermocouple
 }
 
 class UnifiedHardwareApp:
@@ -81,6 +81,7 @@ class UnifiedHardwareApp:
 
         # Actuator State Variables
         self.selected_range = tk.StringVar(value="S1")
+        self.available_com = []
 
         # Plot Data Arrays
         self.t_data = []
@@ -92,6 +93,7 @@ class UnifiedHardwareApp:
 
         self.scan_ports() 
         self.setup_ui()
+        self.bind_shortcuts()
         
         # Start unified polling thread
         self.polling_active = True
@@ -112,13 +114,17 @@ class UnifiedHardwareApp:
             self.available_serial_visa = []
 
         # Scan for Actuator COM ports
-        com_ports = serial.tools.list_ports.comports()
-        self.available_com = []
-        for p in com_ports:
-            if "Arduino" in p.description or "CH340" in p.description or "CP210" in p.description:
-                self.available_com.insert(0, p.device)
-            else:
-                self.available_com.append(p.device)
+        try:
+            com_ports = serial.tools.list_ports.comports()
+            self.available_com = []
+            for p in com_ports:
+                if "Arduino" in p.description or "CH340" in p.description or "CP210" in p.description:
+                    self.available_com.insert(0, p.device)
+                else:
+                    self.available_com.append(p.device)
+        except Exception as e:
+            print(f"COM Port Scan Error: {e}")
+            self.available_com = []
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding=10)
@@ -138,7 +144,6 @@ class UnifiedHardwareApp:
             self.combo_psu_port.set(self.available_serial_visa[0])
         self.combo_psu_port.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
-        # Threaded PSU connection
         self.btn_psu_conn = ttk.Button(psu_frame, text="Connect PSU", command=self.connect_psu_thread)
         self.btn_psu_conn.grid(row=0, column=2, columnspan=2, pady=5, sticky="ew")
 
@@ -184,66 +189,80 @@ class UnifiedHardwareApp:
         self.lbl_heat_rate = ttk.Label(psu_frame, text="Heating Rate: -- K/s", font=("Arial", 11, "bold"), foreground="darkorange")
         self.lbl_heat_rate.grid(row=6, column=0, columnspan=4, pady=2)
 
-
-        # --- ACTUATOR CONTROLS ---
+        # --- ACTUATOR CONTROLS (Updated from interface.py) ---
         act_frame = ttk.LabelFrame(control_frame, text="Arduino Motor Control & Logging", padding=10)
         act_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 5))
 
-        # Row 0: Port
-        ttk.Label(act_frame, text="Port:").grid(row=0, column=0, sticky="w")
-        self.combo_act_port = ttk.Combobox(act_frame, values=self.available_com, width=12)
+        for i in range(4):
+            act_frame.columnconfigure(i, weight=1)
+
+        # Row 0: Port & Connection
+        ttk.Label(act_frame, text="Port:").grid(row=0, column=0, sticky="w", pady=5)
+        self.combo_act_port = ttk.Combobox(act_frame, values=self.available_com, width=15)
         if self.available_com:
             self.combo_act_port.set(self.available_com[0])
         self.combo_act_port.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        
         self.btn_act_conn = ttk.Button(act_frame, text="Connect Actuator", command=self.connect_actuator_thread)
         self.btn_act_conn.grid(row=0, column=2, columnspan=2, pady=5, sticky="ew")
 
-        # Row 1: State Controls
+        # Row 1: State Controls (Enable / Disable)
         self.btn_e1 = ttk.Button(act_frame, text="Enable (E1)", state=tk.DISABLED, command=lambda: self.send_actuator_command("E1"))
         self.btn_e1.grid(row=1, column=0, columnspan=2, pady=2, sticky="ew", padx=1)
         self.btn_e0 = ttk.Button(act_frame, text="Disable (E0)", state=tk.DISABLED, command=lambda: self.send_actuator_command("E0"))
         self.btn_e0.grid(row=1, column=2, columnspan=2, pady=2, sticky="ew", padx=1)
 
-        # Row 2 & 3: Speed Selection
+        # Row 2: Speed Range Selection
         speed_radio_frame = ttk.Frame(act_frame)
-        speed_radio_frame.grid(row=2, column=0, columnspan=4, pady=2, sticky="ew")
-        self.rb_s1 = ttk.Radiobutton(speed_radio_frame, text="S1 (1-100 micrometer/min)", variable=self.selected_range, value="S1", state=tk.DISABLED, command=self._update_speed_placeholder)
+        speed_radio_frame.grid(row=2, column=0, columnspan=4, pady=5, sticky="ew")
+        
+        self.rb_s1 = ttk.Radiobutton(speed_radio_frame, text="S1 (1-100 µm/min)", variable=self.selected_range, value="S1", state=tk.DISABLED, command=self._update_speed_placeholder)
         self.rb_s1.pack(side=tk.LEFT, expand=True)
-        self.rb_s2 = ttk.Radiobutton(speed_radio_frame, text="S2 (100-1000 micrometer/min)", variable=self.selected_range, value="S2", state=tk.DISABLED, command=self._update_speed_placeholder)
+        self.rb_s2 = ttk.Radiobutton(speed_radio_frame, text="S2 (100-1000 µm/min)", variable=self.selected_range, value="S2", state=tk.DISABLED, command=self._update_speed_placeholder)
         self.rb_s2.pack(side=tk.LEFT, expand=True)
-        self.rb_s3 = ttk.Radiobutton(speed_radio_frame, text="S3 (1-45 milimeter/min)", variable=self.selected_range, value="S3", state=tk.DISABLED, command=self._update_speed_placeholder)
+        self.rb_s3 = ttk.Radiobutton(speed_radio_frame, text="S3 (1-45 mm/min)", variable=self.selected_range, value="S3", state=tk.DISABLED, command=self._update_speed_placeholder)
         self.rb_s3.pack(side=tk.LEFT, expand=True)
 
-        ttk.Label(act_frame, text="Speed:").grid(row=3, column=0, sticky="w")
-        self.speed_entry = ttk.Entry(act_frame, width=8, state=tk.DISABLED)
-        self.speed_entry.grid(row=3, column=1, sticky="ew")
+        # Row 3: Speed Entry & Send
+        ttk.Label(act_frame, text="Speed:").grid(row=3, column=0, sticky="w", pady=5)
+        self.speed_entry = ttk.Entry(act_frame, width=10, state=tk.DISABLED)
+        self.speed_entry.grid(row=3, column=1, sticky="ew", pady=5)
         self.speed_entry.insert(0, "50")
+        
         self.btn_send_speed = ttk.Button(act_frame, text="Set Speed", state=tk.DISABLED, command=self.send_speed_command)
-        self.btn_send_speed.grid(row=3, column=2, columnspan=2, sticky="ew", padx=1)
+        self.btn_send_speed.grid(row=3, column=2, columnspan=2, sticky="ew", padx=1, pady=5)
 
-        # Row 4: Motion Controls
+        # Row 4: Motion Controls (Up, Pause, Down, Pos "0")
         self.btn_up = ttk.Button(act_frame, text="▲ UP (U1)", state=tk.DISABLED, command=lambda: self.send_actuator_command("U1"))
-        self.btn_up.grid(row=4, column=0, sticky="ew", padx=1, pady=2)
+        self.btn_up.grid(row=4, column=0, sticky="ew", padx=1, pady=5)
+        
         self.btn_pause = ttk.Button(act_frame, text="⏹ PAUSE (N)", state=tk.DISABLED, command=lambda: self.send_actuator_command("N"))
-        self.btn_pause.grid(row=4, column=1, columnspan=2, sticky="ew", padx=1, pady=2)
+        self.btn_pause.grid(row=4, column=1, sticky="ew", padx=1, pady=5)
+        
         self.btn_down = ttk.Button(act_frame, text="▼ DOWN (D1)", state=tk.DISABLED, command=lambda: self.send_actuator_command("D1"))
-        self.btn_down.grid(row=4, column=3, sticky="ew", padx=1, pady=2)
+        self.btn_down.grid(row=4, column=2, sticky="ew", padx=1, pady=5)
 
-        # Row 5: Status and Position
+        self.btn_zero = ttk.Button(act_frame, text='Pos "0" (Z)', state=tk.DISABLED, command=lambda: self.send_actuator_command("Z"))
+        self.btn_zero.grid(row=4, column=3, sticky="ew", padx=1, pady=5)
+
+        # Row 5: Status and Position Readout
         self.lbl_act_status = ttk.Label(act_frame, text="Status: Disconnected")
         self.lbl_act_status.grid(row=5, column=0, columnspan=2, pady=5, sticky="w")
+        
         self.lbl_pos = ttk.Label(act_frame, text="Pos: -- mm", font=("Arial", 11, "bold"), foreground="blue")
         self.lbl_pos.grid(row=5, column=2, columnspan=2, pady=5, sticky="e")
 
         # Row 6: Polling and Logging
-        ttk.Label(act_frame, text="Poll (s):").grid(row=6, column=0, sticky="w")
-        self.entry_poll_interval = ttk.Entry(act_frame, width=8)
-        self.entry_poll_interval.grid(row=6, column=1, sticky="ew")
+        ttk.Label(act_frame, text="Poll Interval (s):").grid(row=6, column=0, sticky="w", pady=5)
+        self.entry_poll_interval = ttk.Entry(act_frame, width=10)
+        self.entry_poll_interval.grid(row=6, column=1, sticky="ew", pady=5)
         self.entry_poll_interval.insert(0, "1.0")
+        
         self.btn_start_test = ttk.Button(act_frame, text="Start Log", command=self.start_test, state=tk.DISABLED)
-        self.btn_start_test.grid(row=6, column=2, sticky="ew", padx=1)
+        self.btn_start_test.grid(row=6, column=2, sticky="ew", padx=1, pady=5)
+        
         self.btn_stop_test = ttk.Button(act_frame, text="Stop Log", command=self.stop_test, state=tk.DISABLED)
-        self.btn_stop_test.grid(row=6, column=3, sticky="ew", padx=1)
+        self.btn_stop_test.grid(row=6, column=3, sticky="ew", padx=1, pady=5)
 
         # --- DAQ CONTROLS ---
         daq_frame = ttk.LabelFrame(control_frame, text="Keithley DAQ6510", padding=10)
@@ -310,6 +329,18 @@ class UnifiedHardwareApp:
         self.log_text = tk.Text(log_frame, height=6, state=tk.DISABLED)
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
+    def bind_shortcuts(self):
+        self.root.bind("<Up>", self.on_key_up)
+        self.root.bind("<Down>", self.on_key_down)
+
+    def on_key_up(self, event=None):
+        if str(self.btn_up["state"]) == tk.NORMAL:
+            self.send_actuator_command("U1")
+
+    def on_key_down(self, event=None):
+        if str(self.btn_down["state"]) == tk.NORMAL:
+            self.send_actuator_command("D1")
+
     def log(self, message):
         def append():
             self.log_text.config(state=tk.NORMAL)
@@ -329,18 +360,15 @@ class UnifiedHardwareApp:
         self.combo_psu_port.config(state=tk.DISABLED)
         self.log(f"Attempting to connect to PSU on {selected_port}...")
         
-        # Run connection in a background thread so the GUI doesn't freeze
         threading.Thread(target=self._connect_psu, args=(selected_port,), daemon=True).start()
 
     def _connect_psu(self, port):
         try:
-            # Format correction if user typed "COM3"
             if port.upper().startswith("COM"):
                 com_num = "".join(filter(str.isdigit, port))
                 port = f"ASRL{com_num}::INSTR"
 
             with self.psu_lock:
-                # Open resource and set attributes 
                 self.psu = self.rm.open_resource(port)
                 self.psu.baud_rate = 115200  
                 self.psu.data_bits = 8
@@ -350,7 +378,6 @@ class UnifiedHardwareApp:
                 self.psu.write_termination = "\r"
                 self.psu.timeout = 2000
                 
-                # Force remote mode for TDK-Lambda
                 try:
                     self.psu.write("SYST:REM REM")
                 except Exception:
@@ -481,10 +508,11 @@ class UnifiedHardwareApp:
                 self.btn_act_conn.config(text="Actuator Connected")
                 self.lbl_act_status.config(text="Status: Ready")
                 
-                # Enable new module buttons
-                widgets = [self.btn_e1, self.btn_e0, self.rb_s1, self.rb_s2, self.rb_s3,
-                           self.speed_entry, self.btn_send_speed, self.btn_up,
-                           self.btn_pause, self.btn_down]
+                widgets = [
+                    self.btn_e1, self.btn_e0, self.rb_s1, self.rb_s2, self.rb_s3,
+                    self.speed_entry, self.btn_send_speed, self.btn_up,
+                    self.btn_pause, self.btn_down, self.btn_zero
+                ]
                 for w in widgets:
                     w.config(state=tk.NORMAL)
                     
@@ -631,9 +659,7 @@ class UnifiedHardwareApp:
     def voltage_to_temperature(self, channel, voltage):
         cal = TEMPERATURE_CALIBRATION.get(channel)
         if not cal: return 0.0
-        #recevied values are in Voltage, this conversion function is using mV
         voltage_mv = voltage * 1000
-        #returning temperature
         return voltage_mv * cal["gain"] + cal["offset"]
 
     # ------------------- LOGGING & TEST CONTROL -------------------
@@ -750,7 +776,7 @@ class UnifiedHardwareApp:
                 except Exception:
                     pass
 
-            # 2. Query Actuator (synchronously requested to keep logging robust)
+            # 2. Query Actuator
             if self.actuator:
                 try:
                     t_start_act = time.perf_counter()
@@ -768,13 +794,11 @@ class UnifiedHardwareApp:
                         parts = text.split(",")
                         
                         try:
-                            # Ignore asynchronous debug messages from the Arduino 
                             pos_mm = float(parts[0].replace(",", "."))
                             act_time_ms = int(parts[1]) if len(parts) > 1 else None
                             
-                            self.root.after(0, lambda p=pos_mm: self.lbl_pos.config(text=f"Pos: {p:.2f} mm"))
+                            self.root.after(0, lambda p=pos_mm: self.lbl_pos.config(text=f"Pos: {p:.3f} mm"))
                         except ValueError:
-                            # Message caught during readout wasn't position payload 
                             pass
                             
                 except Exception as e:
@@ -784,10 +808,7 @@ class UnifiedHardwareApp:
             if self.daq and self.test_running:
                 try:
                     t_start_daq = time.perf_counter()
-                    
-                    # daq_lock is handled inside read_all_channels
                     daq_voltages, daq_times = self.read_all_channels()
-                    
                     daq_latency_ms = (time.perf_counter() - t_start_daq) * 1000
                     
                     daq_temps = [self.voltage_to_temperature(ch, v) for ch, v in zip(CHANNELS, daq_voltages)]
@@ -833,7 +854,7 @@ class UnifiedHardwareApp:
 
                 self.root.after(0, self.update_plots)
 
-            # 5. Enforce Exact Absolute Polling Frequency using User Interval
+            # 5. Enforce Exact Absolute Polling Frequency
             if self.test_running and self.start_time:
                 self.loop_iteration += 1
                 
