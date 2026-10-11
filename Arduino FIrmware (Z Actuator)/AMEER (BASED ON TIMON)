@@ -173,6 +173,11 @@ void loop() {
       Serial.println(String(count, 4));
     }
 
+//Set position counter to zero
+    if (inputString.startsWith("Z")) {
+      count = 0;
+    }
+
     // Direction UP + Immediate Run Sequence
     if (inputString.startsWith("U1")) {
       if (Extern) {
