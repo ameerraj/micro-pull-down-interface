@@ -14,9 +14,10 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 # ============================================================
 # HARDCODED SAFETY LIMITS & CONFIG 
 # ============================================================
-HARDWARE_OVP = 10.0
+HARDWARE_OVP = 10.5         # Safe OVP ceiling for 0-10V 1000A TDK-Lambda GSP
+PSU_BAUD_RATE = 115200
 
-BAUD_RATE = 9600
+BAUD_RATE = 9600            # Arduino Actuator Baud Rate
 ACTUATOR_STARTUP_SECONDS = 5.0
 SERIAL_RESPONSE_TIMEOUT_SECONDS = 0.8
 DEFAULT_POLL_INTERVAL = 1.0
@@ -24,8 +25,8 @@ DEFAULT_POLL_INTERVAL = 1.0
 # ============================================================
 # THERMAL CONSTANTS
 # ============================================================
-CRUCIBLE_MASS_KG = 0.0098  # 9.8g
-CRUCIBLE_CP = 133       # J/(kg*K) for Platinum Crucible
+CRUCIBLE_MASS_KG = 0.0098   # 9.8g
+CRUCIBLE_CP = 133           # J/(kg*K) for Platinum Crucible
 
 # ============================================================
 # DAQ6510 CONSTANTS & CALIBRATION
@@ -44,28 +45,30 @@ TEMPERATURE_CALIBRATION = {
     105: {"gain": 84.33, "offset": 10.78}, # crucible thermocouple
 }
 
+
 class UnifiedHardwareApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Advanced Hardware Controller & DAQ")
-        self.root.geometry("1400x850") 
+        self.root.geometry("1400x850")
         
         # INDIVIDUAL HARDWARE LOCKS
         self.psu_lock = threading.Lock()
         self.actuator_lock = threading.Lock()
         self.daq_lock = threading.Lock()
         
-        # USE ONE UNIFIED BACKEND FOR EVERYTHING
+        # VISA BACKEND FOR USBTMC DAQ6510
         self.rm = pyvisa.ResourceManager()
         
-        self.psu = None
-        self.actuator = None
-        self.daq = None
+        self.psu = None           # serial.Serial instance (TDK-Lambda GSP)
+        self.psu_protocol = "SCPI"
+        self.actuator = None      # serial.Serial instance (Arduino)
+        self.daq = None           # pyvisa Resource (Keithley DAQ6510)
         
         self.test_running = False
         self.csv_file = None
         self.csv_writer = None
-        self.loop_iteration = 0  # Absolute timeline tracker
+        self.loop_iteration = 0   # Absolute timeline tracker
         self.poll_interval = DEFAULT_POLL_INTERVAL
 
         # User-defined safety ceilings
@@ -79,19 +82,21 @@ class UnifiedHardwareApp:
         self.ramp_rate_A_per_sec = 0.0
         self.last_ramp_time = 0.0
 
-        # Actuator State Variables
+        # Actuator & Port State Variables
         self.selected_range = tk.StringVar(value="S1")
-        self.available_com = []
+        self.available_psu_com = []
+        self.available_act_com = []
+        self.available_usb_visa = []
 
         # Plot Data Arrays
         self.t_data = []
         self.v_data = []
         self.i_data = []
         self.pos_data = []
-        self.temp_data = {ch: [] for ch in CHANNELS} 
+        self.temp_data = {ch: [] for ch in CHANNELS}
         self.start_time = None
 
-        self.scan_ports() 
+        self.scan_ports()
         self.setup_ui()
         self.bind_shortcuts()
         
@@ -101,30 +106,42 @@ class UnifiedHardwareApp:
         self.poll_thread.start()
 
     def scan_ports(self):
+        # 1. Scan VISA for USB/TCPIP instruments (Keithley DAQ6510)
         try:
-            # Scan resources using the unified VISA backend
             resources = self.rm.list_resources()
             self.available_usb_visa = [r for r in resources if "USB" in r or "TCPIP" in r]
-            self.available_serial_visa = [r for r in resources if "ASRL" in r]
-            
             print(f"DEBUG VISA Resources: {resources}")
         except Exception as e:
             print(f"VISA Scan Error: {e}")
             self.available_usb_visa = []
-            self.available_serial_visa = []
 
-        # Scan for Actuator COM ports
+        # 2. Scan OS COM ports for PSU (VID:PID 2504:0002 / COM4) and Actuator (Arduino / FTDI / CH340)
         try:
             com_ports = serial.tools.list_ports.comports()
-            self.available_com = []
+            self.available_psu_com = []
+            self.available_act_com = []
             for p in com_ports:
-                if "Arduino" in p.description or "CH340" in p.description or "CP210" in p.description:
-                    self.available_com.insert(0, p.device)
+                # Prioritize TDK-Lambda USB-CDC (2504:0002) for PSU list
+                if "2504:0002" in p.hwid or p.device == "COM4":
+                    self.available_psu_com.insert(0, p.device)
                 else:
-                    self.available_com.append(p.device)
+                    self.available_psu_com.append(p.device)
+
+                # Prioritize Arduino/FTDI/CH340 (and non-PSU ports) for Actuator list
+                if "2504:0002" not in p.hwid and (
+                    "Arduino" in p.description or "CH340" in p.description
+                    or "CP210" in p.description or "0403:6001" in p.hwid
+                ):
+                    self.available_act_com.insert(0, p.device)
+                else:
+                    self.available_act_com.append(p.device)
+
+            if not self.available_psu_com:
+                self.available_psu_com = ["COM4"]
         except Exception as e:
             print(f"COM Port Scan Error: {e}")
-            self.available_com = []
+            self.available_psu_com = ["COM4"]
+            self.available_act_com = []
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding=10)
@@ -135,13 +152,12 @@ class UnifiedHardwareApp:
         control_frame.pack(fill=tk.X, pady=(0, 10))
 
         # --- PSU CONTROLS ---
-        psu_frame = ttk.LabelFrame(control_frame, text="TDK-Lambda Power Supply", padding=10)
+        psu_frame = ttk.LabelFrame(control_frame, text="TDK-Lambda Power Supply (GSP 10-1000)", padding=10)
         psu_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
         ttk.Label(psu_frame, text="Port:").grid(row=0, column=0, sticky="w", padx=2)
-        self.combo_psu_port = ttk.Combobox(psu_frame, values=self.available_serial_visa, width=15)
-        if self.available_serial_visa:
-            self.combo_psu_port.set(self.available_serial_visa[0])
+        self.combo_psu_port = ttk.Combobox(psu_frame, values=self.available_psu_com, width=15)
+        self.combo_psu_port.set(self.available_psu_com[0])
         self.combo_psu_port.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
         self.btn_psu_conn = ttk.Button(psu_frame, text="Connect PSU", command=self.connect_psu_thread)
@@ -150,7 +166,7 @@ class UnifiedHardwareApp:
         ttk.Label(psu_frame, text="Max Allowable V:").grid(row=1, column=0, sticky="w")
         self.entry_max_v = ttk.Entry(psu_frame, width=8)
         self.entry_max_v.grid(row=1, column=1, padx=5, pady=2)
-        self.entry_max_v.insert(0, "24.0")
+        self.entry_max_v.insert(0, "10.0")
 
         ttk.Label(psu_frame, text="Max Allowable I:").grid(row=1, column=2, sticky="w")
         self.entry_max_i = ttk.Entry(psu_frame, width=8)
@@ -189,7 +205,7 @@ class UnifiedHardwareApp:
         self.lbl_heat_rate = ttk.Label(psu_frame, text="Heating Rate: -- K/s", font=("Arial", 11, "bold"), foreground="darkorange")
         self.lbl_heat_rate.grid(row=6, column=0, columnspan=4, pady=2)
 
-        # --- ACTUATOR CONTROLS (Updated from interface.py) ---
+        # --- ACTUATOR CONTROLS ---
         act_frame = ttk.LabelFrame(control_frame, text="Arduino Motor Control & Logging", padding=10)
         act_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 5))
 
@@ -198,9 +214,9 @@ class UnifiedHardwareApp:
 
         # Row 0: Port & Connection
         ttk.Label(act_frame, text="Port:").grid(row=0, column=0, sticky="w", pady=5)
-        self.combo_act_port = ttk.Combobox(act_frame, values=self.available_com, width=15)
-        if self.available_com:
-            self.combo_act_port.set(self.available_com[0])
+        self.combo_act_port = ttk.Combobox(act_frame, values=self.available_act_com, width=15)
+        if self.available_act_com:
+            self.combo_act_port.set(self.available_act_com[0])
         self.combo_act_port.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         
         self.btn_act_conn = ttk.Button(act_frame, text="Connect Actuator", command=self.connect_actuator_thread)
@@ -349,63 +365,152 @@ class UnifiedHardwareApp:
             self.log_text.config(state=tk.DISABLED)
         self.root.after(0, append)
 
-    # ------------------- PSU METHODS -------------------
+    # ------------------- PSU PYSERIAL METHODS -------------------
+    def _psu_write(self, ser_inst, cmd):
+        """Writes command with \r\n termination over PySerial."""
+        ser_inst.write(f"{cmd}\r\n".encode("ascii"))
+        ser_inst.flush()
+
+    def _psu_query(self, ser_inst, cmd, wait_s=0.08):
+        """Writes command and reads back until \r or timeout."""
+        ser_inst.reset_input_buffer()
+        self._psu_write(ser_inst, cmd)
+        time.sleep(wait_s)
+        raw = ser_inst.read_until(b"\r")
+        if ser_inst.in_waiting > 0:
+            raw += ser_inst.read(ser_inst.in_waiting)
+        return raw.decode("ascii", errors="replace").strip()
+
+    def check_psu_Command(self, ser_inst, cmd):
+        """Sends a command to the PSU and checks for immediate reply or SCPI error."""
+        ser_inst.reset_input_buffer()
+        self._psu_write(ser_inst, cmd)
+        time.sleep(0.08)
+
+        if ser_inst.in_waiting > 0:
+            reply = ser_inst.read(ser_inst.in_waiting).decode("ascii", errors="replace").strip()
+            self.log(f"PSU reply to '{cmd}': {reply}")
+            return
+
+        if self.psu_protocol == "SCPI":
+            err = self._psu_query(ser_inst, "SYST:ERR?")
+            if err and not err.startswith(("0,", "+0,")):
+                self.log(f"PSU SCPI Error on '{cmd}': {err}")
+            else:
+                self.log(f"'{cmd}' -> OK ({err or 'No error'})")
+
     def connect_psu_thread(self):
         selected_port = self.combo_psu_port.get().strip()
         if not selected_port:
-            messagebox.showerror("Error", "Please select or type a COM port for the PSU (e.g., COM3).")
+            messagebox.showerror("Error", "Please select or type a COM port for the PSU (e.g., COM4).")
             return
-            
+
+        if selected_port.upper().startswith("ASRL"):
+            num = "".join(filter(str.isdigit, selected_port))
+            selected_port = f"COM{num}"
+
         self.btn_psu_conn.config(state=tk.DISABLED)
         self.combo_psu_port.config(state=tk.DISABLED)
-        self.log(f"Attempting to connect to PSU on {selected_port}...")
+        self.log(f"Attempting to connect to PSU on {selected_port} via PySerial...")
         
         threading.Thread(target=self._connect_psu, args=(selected_port,), daemon=True).start()
 
     def _connect_psu(self, port):
+        temp_ser = None
         try:
-            if port.upper().startswith("COM"):
-                com_num = "".join(filter(str.isdigit, port))
-                port = f"ASRL{com_num}::INSTR"
-
             with self.psu_lock:
-                self.psu = self.rm.open_resource(port)
-                self.psu.baud_rate = 115200  
-                self.psu.data_bits = 8
-                self.psu.parity = pyvisa.constants.Parity.none
-                self.psu.stop_bits = pyvisa.constants.StopBits.one
-                self.psu.read_termination = "\r\n"
-                self.psu.write_termination = "\r"
-                self.psu.timeout = 2000
-                
-                try:
-                    self.psu.write("SYST:REM REM")
-                except Exception:
-                    pass 
-                    
-                self.psu.write("INST:NSEL 6")
-                self.psu.write(f"VOLT:PROT:LEV {HARDWARE_OVP}")
-                self.psu.write("VOLT 0.0")
-                self.psu.write("CURR 0.0")
-                self.psu.write("OUTP ON")
+                temp_ser = serial.Serial(
+                    port=port,
+                    baudrate=PSU_BAUD_RATE,
+                    bytesize=serial.EIGHTBITS,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
+                    timeout=0.6,
+                    write_timeout=1.0,
+                    rtscts=False,
+                    dsrdtr=False
+                )
+                # Assert DTR & RTS required by TDK-Lambda Genesys+ USB CDC (2504:0002)
+                temp_ser.dtr = True
+                temp_ser.rts = True
+                time.sleep(0.15)
+                temp_ser.reset_input_buffer()
+                temp_ser.reset_output_buffer()
+
+                connected_idn = None
+                self.psu_protocol = None
+
+                for addr in [6, 1, 0]:
+                    # 1. Try SCPI Mode (Genesys+ GSP)
+                    self._psu_write(temp_ser, f"INST:NSEL {addr}")
+                    time.sleep(0.1)
+                    temp_ser.reset_input_buffer()
+                    idn = self._psu_query(temp_ser, "*IDN?", wait_s=0.15)
+                    if idn:
+                        connected_idn = idn
+                        self.psu_protocol = "SCPI"
+                        self.log(f"✅ PSU Connected (SCPI Addr {addr}): {connected_idn}")
+                        break
+
+                    # 2. Try GEN Mode
+                    resp = self._psu_query(temp_ser, f"ADR {addr:02d}", wait_s=0.15)
+                    if "OK" in resp:
+                        connected_idn = self._psu_query(temp_ser, "IDN?", wait_s=0.15)
+                        self.psu_protocol = "GEN"
+                        self.log(f"✅ PSU Connected (GEN Addr {addr:02d}): {connected_idn}")
+                        break
+
+                if not connected_idn or not self.psu_protocol:
+                    raise RuntimeError(
+                        f"No response from PSU on {port}. "
+                        "Verify Front Panel COMM -> IntF is set to 'USB' and Addr=6."
+                    )
+
+                if self.psu_protocol == "SCPI":
+                    for cmd in [
+                        "SYST:SET REM",
+                        f"VOLT:PROT:LEV {HARDWARE_OVP}",
+                        "VOLT 0.0",
+                        "CURR 0.0",
+                        "OUTP ON"
+                    ]:
+                        self.check_psu_Command(temp_ser, cmd)
+                else:
+                    for cmd in [
+                        "RMT 1",
+                        f"OVP {HARDWARE_OVP}",
+                        "PV 0.0",
+                        "PC 0.0",
+                        "OUT 1"
+                    ]:
+                        self.check_psu_Command(temp_ser, cmd)
+
+                self.psu = temp_ser
             
             def update_ui():
                 self.btn_psu_conn.config(text="PSU Connected", state=tk.DISABLED)
                 self.btn_apply.config(state=tk.NORMAL)
                 self.btn_safe_off.config(state=tk.NORMAL)
-                self.log("PSU connected. Output enabled at 0V / 0A.")
+                self.check_enable_test()
+                self.log(f"PSU active in REM mode ({self.psu_protocol}). Output enabled at 0V / 0A.")
             
             self.root.after(0, update_ui)
 
         except Exception as e:
             self.log(f"PSU Connection failed: {e}")
+            if temp_ser and temp_ser.is_open:
+                try:
+                    temp_ser.close()
+                except Exception:
+                    pass
             self.root.after(0, lambda: [
                 self.btn_psu_conn.config(state=tk.NORMAL),
                 self.combo_psu_port.config(state=tk.NORMAL)
             ])
 
     def start_current_ramp(self):
-        if not self.psu: return
+        if not self.psu:
+            return
         try:
             self.max_v_limit = float(self.entry_max_v.get())
             self.max_i_limit = float(self.entry_max_i.get())
@@ -414,12 +519,19 @@ class UnifiedHardwareApp:
             ramp_rate_A_min = float(self.entry_ramp_rate.get())
 
             if target_v > self.max_v_limit or target_i > self.max_i_limit:
-                messagebox.showerror("Limit Error", f"Targets exceed maximum stored limits ({self.max_v_limit}V, {self.max_i_limit}A).")
+                messagebox.showerror(
+                    "Limit Error",
+                    f"Targets exceed maximum stored limits ({self.max_v_limit}V, {self.max_i_limit}A)."
+                )
                 return
 
             with self.psu_lock:
-                self.psu.write(f"VOLT {target_v}")
-                current_setpoint_str = self.psu.query("CURR?").strip()
+                if self.psu_protocol == "SCPI":
+                    self.check_psu_Command(self.psu, f"VOLT {target_v}")
+                    current_setpoint_str = self._psu_query(self.psu, "CURR?")
+                else:
+                    self.check_psu_Command(self.psu, f"PV {target_v}")
+                    current_setpoint_str = self._psu_query(self.psu, "PC?")
                 
             self.psu_current_setpoint = float(current_setpoint_str)
 
@@ -432,6 +544,8 @@ class UnifiedHardwareApp:
             self.log(f"Starting Current Ramp: {self.psu_current_setpoint}A -> {target_i}A at {ramp_rate_A_min} A/min.")
         except ValueError:
             messagebox.showerror("Input Error", "Please ensure all limits and targets are valid numbers.")
+        except Exception as e:
+            self.log(f"Error starting ramp: {e}")
 
     def stop_current_ramp(self):
         if self.ramping_active:
@@ -440,14 +554,20 @@ class UnifiedHardwareApp:
             self.log(f"Ramp manually stopped. Holding at {self.psu_current_setpoint:.3f} A.")
 
     def safe_heater_off(self):
-        if not self.psu: return
+        if not self.psu:
+            return
         self.ramping_active = False
         self.btn_stop_ramp.config(state=tk.DISABLED)
         try:
             with self.psu_lock:
-                self.psu.write("VOLT 0.0")
-                self.psu.write("CURR 0.0")
-                self.psu.write("OUTP OFF")
+                if self.psu_protocol == "SCPI":
+                    self.check_psu_Command(self.psu, "VOLT 0.0")
+                    self.check_psu_Command(self.psu, "CURR 0.0")
+                    self.check_psu_Command(self.psu, "OUTP OFF")
+                else:
+                    self.check_psu_Command(self.psu, "PV 0.0")
+                    self.check_psu_Command(self.psu, "PC 0.0")
+                    self.check_psu_Command(self.psu, "OUT 0")
             self.log("🛑 SAFE OFF TRIGGERED. Heater set to 0V / 0A and output disabled.")
         except Exception as e:
             self.log(f"Error during Safe Off: {e}")
@@ -472,8 +592,14 @@ class UnifiedHardwareApp:
             self.root.after(0, lambda: self.btn_stop_ramp.config(state=tk.DISABLED))
             self.log("Ramp stopped: Hit max current limit.")
 
-        with self.psu_lock:
-            self.psu.write(f"CURR {self.psu_current_setpoint:.3f}")
+        try:
+            with self.psu_lock:
+                if self.psu_protocol == "SCPI":
+                    self._psu_write(self.psu, f"CURR {self.psu_current_setpoint:.3f}")
+                else:
+                    self._psu_query(self.psu, f"PC {self.psu_current_setpoint:.3f}")
+        except Exception as e:
+            self.log(f"Ramp write error: {e}")
 
         if math.isclose(self.psu_current_setpoint, self.psu_target_i, abs_tol=0.001):
             self.ramping_active = False
@@ -641,7 +767,7 @@ class UnifiedHardwareApp:
         with self.daq_lock:
             self.daq.write(':TRAC:CLEAR "defbuffer1"')
             self.daq.write(":INIT")
-            self.daq.query("*OPC?") 
+            self.daq.query("*OPC?")
 
             raw_data = self.daq.query_ascii_values(f':TRAC:DATA? 1, {len(CHANNELS)}, "defbuffer1", READ, REL')
         
@@ -658,13 +784,14 @@ class UnifiedHardwareApp:
 
     def voltage_to_temperature(self, channel, voltage):
         cal = TEMPERATURE_CALIBRATION.get(channel)
-        if not cal: return 0.0
+        if not cal:
+            return 0.0
         voltage_mv = voltage * 1000
         return voltage_mv * cal["gain"] + cal["offset"]
 
     # ------------------- LOGGING & TEST CONTROL -------------------
     def check_enable_test(self):
-        if self.actuator or self.daq:
+        if self.psu or self.actuator or self.daq:
             self.btn_start_test.config(state=tk.NORMAL)
 
     def start_test(self):
@@ -681,7 +808,7 @@ class UnifiedHardwareApp:
         self.entry_poll_interval.config(state=tk.DISABLED)
         self.btn_stop_test.config(state=tk.NORMAL)
         
-        self.loop_iteration = 0  
+        self.loop_iteration = 0
         self.t_data.clear()
         self.v_data.clear()
         self.i_data.clear()
@@ -696,8 +823,8 @@ class UnifiedHardwareApp:
         self.csv_writer = csv.writer(self.csv_file)
         
         headers = [
-            "PC_Timestamp", "PC_Elapsed_s", 
-            "PSU_Voltage_V", "PSU_Current_A", "Heating_Rate_Ks", 
+            "PC_Timestamp", "PC_Elapsed_s",
+            "PSU_Voltage_V", "PSU_Current_A", "Heating_Rate_Ks",
             "Actuator_Position_mm", "Actuator_HW_Time_ms",
             "PSU_Latency_ms", "Actuator_Latency_ms", "DAQ_Latency_ms"
         ]
@@ -718,7 +845,8 @@ class UnifiedHardwareApp:
         self.log("Data logging stopped.")
 
     def update_plots(self):
-        if not self.t_data: return
+        if not self.t_data:
+            return
         self.line_v.set_data(self.t_data, self.v_data)
         self.line_i.set_data(self.t_data, self.i_data)
         self.line_pos.set_data(self.t_data, self.pos_data)
@@ -754,14 +882,21 @@ class UnifiedHardwareApp:
             daq_temps = [None] * len(CHANNELS)
             daq_times = [None] * len(CHANNELS)
 
-            # 1. Query PSU
-            if self.psu:
+            # 1. Query PSU via PySerial
+            if self.psu and self.psu.is_open:
                 try:
                     t_start_psu = time.perf_counter()
                     
                     with self.psu_lock:
-                        v_meas = float(self.psu.query("MEAS:VOLT?").strip())
-                        i_meas = float(self.psu.query("MEAS:CURR?").strip())
+                        if self.psu_protocol == "SCPI":
+                            v_str = self._psu_query(self.psu, "MEAS:VOLT?", wait_s=0.05)
+                            i_str = self._psu_query(self.psu, "MEAS:CURR?", wait_s=0.05)
+                        else:
+                            v_str = self._psu_query(self.psu, "MV?", wait_s=0.05)
+                            i_str = self._psu_query(self.psu, "MC?", wait_s=0.05)
+
+                        v_meas = float(v_str)
+                        i_meas = float(i_str)
                     
                     psu_latency_ms = (time.perf_counter() - t_start_psu) * 1000
                     
@@ -773,23 +908,23 @@ class UnifiedHardwareApp:
                         self.lbl_i_meas.config(text=f"Meas I: {i:.3f} A"),
                         self.lbl_heat_rate.config(text=f"Heating Rate: {hr:.2f} K/s")
                     ])
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.log(f"PSU Poll Error: {e}")
 
             # 2. Query Actuator
-            if self.actuator:
+            if self.actuator and self.actuator.is_open:
                 try:
                     t_start_act = time.perf_counter()
                     
                     with self.actuator_lock:
                         self.actuator.reset_input_buffer()
-                        self.actuator.write(b"P\n") 
+                        self.actuator.write(b"P\n")
                         self.actuator.flush()
                         raw = self.actuator.readline()
                     
                     act_latency_ms = (time.perf_counter() - t_start_act) * 1000
                     
-                    if raw:  
+                    if raw:
                         text = raw.decode("ascii", errors="replace").strip()
                         parts = text.split(",")
                         
@@ -822,10 +957,10 @@ class UnifiedHardwareApp:
             if self.test_running:
                 if self.csv_writer:
                     row = [
-                        current_time_str, 
-                        round(elapsed, 3), 
-                        v_meas if v_meas is not None else "", 
-                        i_meas if i_meas is not None else "", 
+                        current_time_str,
+                        round(elapsed, 3),
+                        v_meas if v_meas is not None else "",
+                        i_meas if i_meas is not None else "",
                         round(heat_rate, 3) if heat_rate is not None else "",
                         pos_mm if pos_mm is not None else "",
                         act_time_ms if act_time_ms is not None else "",
@@ -836,7 +971,7 @@ class UnifiedHardwareApp:
                     
                     for v, t, hw_time in zip(daq_voltages, daq_temps, daq_times):
                         row.extend([
-                            v if v is not None else "", 
+                            v if v is not None else "",
                             t if t is not None else "",
                             hw_time if hw_time is not None else ""
                         ])
@@ -857,10 +992,8 @@ class UnifiedHardwareApp:
             # 5. Enforce Exact Absolute Polling Frequency
             if self.test_running and self.start_time:
                 self.loop_iteration += 1
-                
                 next_target_time = self.start_time + (self.loop_iteration * self.poll_interval)
                 sleep_time = next_target_time - time.time()
-                
                 if sleep_time > 0:
                     time.sleep(sleep_time)
             else:
@@ -874,29 +1007,38 @@ class UnifiedHardwareApp:
             self.stop_test()
         
         with self.psu_lock:
-            if self.psu:
+            if self.psu and self.psu.is_open:
                 try:
-                    self.psu.write("OUTP OFF")
-                    self.psu.write("SYST:REM LOC")
+                    if self.psu_protocol == "SCPI":
+                        self._psu_write(self.psu, "OUTP OFF")
+                        self._psu_write(self.psu, "SYST:SET LOC")
+                    else:
+                        self._psu_query(self.psu, "OUT 0")
+                        self._psu_query(self.psu, "RMT 0")
                     self.psu.close()
-                except: pass
+                except Exception:
+                    pass
+                self.psu = None
             
         with self.actuator_lock:
-            if self.actuator:
-                try: 
+            if self.actuator and self.actuator.is_open:
+                try:
                     self.actuator.write(b"N\n")
                     self.actuator.write(b"E0\n")
-                    self.actuator.close() 
-                except: pass
+                    self.actuator.close()
+                except Exception:
+                    pass
 
         with self.daq_lock:
             if self.daq:
                 try:
                     self.daq.write(":ABOR")
                     self.daq.close()
-                except: pass
+                except Exception:
+                    pass
             
         self.root.destroy()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
