@@ -13,6 +13,8 @@ CRUCIBLE_MASS_KG = 0.0098  # 9.8g
 CRUCIBLE_CP = 130.0 
 
 
+IO1 - current development version
+
 
 IO2 - multithreaded
 
