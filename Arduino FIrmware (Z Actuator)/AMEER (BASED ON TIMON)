@@ -447,7 +447,7 @@ void loop() {
     motorSchalter();
   }
 
-  // Safety precaution, in case of buffer saturation
+  // added delay - Safety precaution, in case of buffer saturation
   delay(150);
   LPosi(10, 3, 8, String(count, 3));
 }
