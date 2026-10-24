@@ -124,6 +124,12 @@ class UnifiedHardwareApp:
         self.i_data = []
         self.pos_data = []
         self.temp_data = {ch: [] for ch in CHANNELS}
+
+        # Thermocouple graph visibility only. Acquisition and CSV logging always
+        # continue for all five DAQ channels regardless of these selections.
+        self.temp_channel_visible = {
+            ch: tk.BooleanVar(value=True) for ch in CHANNELS
+        }
         self.start_time = None
 
         self.scan_ports()
@@ -349,7 +355,34 @@ class UnifiedHardwareApp:
         self.lbl_daq_status.pack(pady=5)
 
         self.lbl_daq_temps = ttk.Label(daq_frame, text="Temps: -- °C", font=("Arial", 11), wraplength=200)
-        self.lbl_daq_temps.pack(pady=10)
+        self.lbl_daq_temps.pack(pady=(8, 5))
+
+        # Graph-only channel filter. These controls never change which channels
+        # the DAQ acquires or which values are written to the CSV file.
+        channel_filter = ttk.LabelFrame(daq_frame, text="Graph Channels", padding=5)
+        channel_filter.pack(fill=tk.X, pady=(3, 5))
+
+        for col in range(3):
+            channel_filter.columnconfigure(col, weight=1)
+
+        for index, ch in enumerate(CHANNELS):
+            ttk.Checkbutton(
+                channel_filter,
+                text=f"CH {ch}",
+                variable=self.temp_channel_visible[ch],
+                command=self._on_temp_channel_visibility_changed,
+            ).grid(row=index // 3, column=index % 3, sticky="w", padx=3, pady=2)
+
+        channel_buttons = ttk.Frame(channel_filter)
+        channel_buttons.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        channel_buttons.columnconfigure(0, weight=1)
+        channel_buttons.columnconfigure(1, weight=1)
+        ttk.Button(
+            channel_buttons, text="Select All", command=lambda: self._set_all_temp_channels(True)
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        ttk.Button(
+            channel_buttons, text="Clear All", command=lambda: self._set_all_temp_channels(False)
+        ).grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
         # ==================== BOTTOM ROW: SYSTEM LOG ====================
         # Anchor the log before creating the expanding graph.  Keeping it on the
@@ -1727,6 +1760,50 @@ class UnifiedHardwareApp:
         self.btn_stop_test.config(state=tk.DISABLED)
         self.log("Data logging stopped.")
 
+    def _set_all_temp_channels(self, visible):
+        """Select or clear all thermocouple lines without affecting acquisition."""
+        for ch in CHANNELS:
+            self.temp_channel_visible[ch].set(bool(visible))
+        self._on_temp_channel_visibility_changed()
+
+    def _on_temp_channel_visibility_changed(self):
+        """Apply the thermocouple display filter and refresh legend/scale."""
+        if not hasattr(self, "line_temps"):
+            return
+
+        for ch in CHANNELS:
+            self.line_temps[ch].set_visible(self.temp_channel_visible[ch].get())
+
+        self._refresh_temp_legend_and_scale()
+        if hasattr(self, "canvas"):
+            self.canvas.draw_idle()
+
+    def _refresh_temp_legend_and_scale(self):
+        """Keep the thermocouple legend and Y-axis tied to visible channels only."""
+        visible_lines = [
+            self.line_temps[ch]
+            for ch in CHANNELS
+            if self.temp_channel_visible[ch].get()
+        ]
+
+        old_legend = self.ax_temp.get_legend()
+        if old_legend is not None:
+            old_legend.remove()
+
+        if visible_lines:
+            self.ax_temp.legend(
+                visible_lines,
+                [line.get_label() for line in visible_lines],
+                fontsize=8,
+                loc="upper left",
+            )
+            self.ax_temp.relim(visible_only=True)
+            self.ax_temp.autoscale_view()
+        else:
+            # An empty selection is valid. Keep the graph usable rather than
+            # stopping DAQ acquisition or treating it as an error.
+            self.ax_temp.set_ylim(auto=True)
+
     def update_plots(self):
         if not self.t_data:
             return
@@ -1736,6 +1813,7 @@ class UnifiedHardwareApp:
         
         for ch in CHANNELS:
             self.line_temps[ch].set_data(self.t_data, self.temp_data[ch])
+            self.line_temps[ch].set_visible(self.temp_channel_visible[ch].get())
 
         self.ax_pwr_v.relim()
         self.ax_pwr_v.autoscale_view()
@@ -1745,8 +1823,7 @@ class UnifiedHardwareApp:
         self.ax_pos.relim()
         self.ax_pos.autoscale_view()
 
-        self.ax_temp.relim()
-        self.ax_temp.autoscale_view()
+        self._refresh_temp_legend_and_scale()
 
         self.canvas.draw()
 
