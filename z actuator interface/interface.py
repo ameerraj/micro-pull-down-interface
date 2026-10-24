@@ -5,6 +5,7 @@ import serial.tools.list_ports
 import threading
 import time
 import math
+import re
 import csv
 from datetime import datetime
 
@@ -16,20 +17,22 @@ from matplotlib.figure import Figure
 # CONFIGURATION
 # ============================================================
 BAUD_RATE = 9600
-ACTUATOR_STARTUP_SECONDS = 5.0
+ACTUATOR_STARTUP_SECONDS = 3.5
 SERIAL_RESPONSE_TIMEOUT_SECONDS = 0.8
 DEFAULT_POLL_INTERVAL = 1.0
 QUINTIC_SAMPLE_INTERVAL_SECONDS = 0.5
 GRAPH_REFRESH_MS = 150
 GRAPH_HISTORY_SECONDS = 300.0
+HANDSHAKE_RESPONSE_SECONDS = 8.0
+EXPECTED_DEVICE_ID = "COM_Port_verbunden_HTMREETZ_R1.33"
 
 
 class StandaloneActuatorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Arduino Actuator Controller & Logger")
-        self.root.geometry("680x560")
-        self.root.minsize(620, 500)
+        self.root.geometry("700x650")
+        self.root.minsize(640, 580)
 
         # ---------------- Hardware ----------------
         self.actuator_lock = threading.Lock()
@@ -50,6 +53,8 @@ class StandaloneActuatorApp:
         self.current_commanded_speed_um_min = None
         self.motion_state = "PAUSED"          # UP / DOWN / PAUSED
         self.current_position_mm = None
+        self.up_locked_until_pause = False
+        self.down_locked_until_pause = False
 
         # ---------------- Quintic state ----------------
         self.quintic_popup = None
@@ -154,13 +159,13 @@ class StandaloneActuatorApp:
         self.btn_send_speed.grid(row=3, column=2, columnspan=2, sticky="ew", padx=1, pady=5)
 
         self.btn_up = ttk.Button(act_frame, text="▲ UP (U1)", state=tk.DISABLED,
-                                 command=lambda: self.send_actuator_command("U1"))
+                                 command=lambda: self.send_direction_command("U1"))
         self.btn_up.grid(row=4, column=0, sticky="ew", padx=1, pady=5)
         self.btn_pause = ttk.Button(act_frame, text="⏹ PAUSE (N)", state=tk.DISABLED,
                                     command=lambda: self.send_actuator_command("N"))
         self.btn_pause.grid(row=4, column=1, sticky="ew", padx=1, pady=5)
         self.btn_down = ttk.Button(act_frame, text="▼ DOWN (D1)", state=tk.DISABLED,
-                                   command=lambda: self.send_actuator_command("D1"))
+                                   command=lambda: self.send_direction_command("D1"))
         self.btn_down.grid(row=4, column=2, sticky="ew", padx=1, pady=5)
         self.btn_zero = ttk.Button(act_frame, text='Pos "0" (Z)', state=tk.DISABLED,
                                    command=lambda: self.send_actuator_command("Z"))
@@ -188,6 +193,30 @@ class StandaloneActuatorApp:
         )
         self.btn_enable_quintic.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(8, 2))
 
+        # Main-window mirror of the actuator state strip used in Quintic Mode.
+        main_state = ttk.LabelFrame(main_frame, text="Current Actuator State", padding=6)
+        main_state.pack(fill=tk.X, pady=(0, 10))
+        for i in range(3):
+            main_state.columnconfigure(i, weight=1)
+
+        main_speed = ttk.Frame(main_state)
+        main_speed.grid(row=0, column=0, sticky="ew", padx=6)
+        ttk.Label(main_speed, text="CURRENT APPLIED SPEED", font=("Arial", 9, "bold")).pack(anchor="center")
+        self.lbl_main_current_speed = ttk.Label(main_speed, text="0 µm/min", font=("Arial", 16, "bold"))
+        self.lbl_main_current_speed.pack(anchor="center")
+
+        main_motion = ttk.Frame(main_state)
+        main_motion.grid(row=0, column=1, sticky="ew", padx=6)
+        ttk.Label(main_motion, text="MOTION", font=("Arial", 9, "bold")).pack(anchor="center")
+        self.lbl_main_motion = ttk.Label(main_motion, text="PAUSED", font=("Arial", 13, "bold"))
+        self.lbl_main_motion.pack(anchor="center")
+
+        main_position = ttk.Frame(main_state)
+        main_position.grid(row=0, column=2, sticky="ew", padx=6)
+        ttk.Label(main_position, text="POSITION", font=("Arial", 9, "bold")).pack(anchor="center")
+        self.lbl_main_position = ttk.Label(main_position, text="-- mm", font=("Arial", 13, "bold"))
+        self.lbl_main_position.pack(anchor="center")
+
         log_frame = ttk.LabelFrame(main_frame, text="System Log", padding=5)
         log_frame.pack(fill=tk.BOTH, expand=True)
         self.log_text = tk.Text(log_frame, height=10, state=tk.DISABLED, wrap=tk.WORD)
@@ -199,11 +228,11 @@ class StandaloneActuatorApp:
 
     def on_key_up(self, event=None):
         if str(self.btn_up["state"]) == tk.NORMAL:
-            self.send_actuator_command("U1")
+            self.send_direction_command("U1")
 
     def on_key_down(self, event=None):
         if str(self.btn_down["state"]) == tk.NORMAL:
-            self.send_actuator_command("D1")
+            self.send_direction_command("D1")
 
     # ============================================================
     # LOGGING TO BOTH VIEWS
@@ -246,32 +275,98 @@ class StandaloneActuatorApp:
         threading.Thread(target=self._connect_actuator, args=(selected_port,), daemon=True).start()
 
     def _connect_actuator(self, port):
+        temp_serial = None
         try:
-            temp_serial = serial.Serial(port, BAUD_RATE, timeout=SERIAL_RESPONSE_TIMEOUT_SECONDS)
-            self.log(f"Actuator port opened. Waiting {ACTUATOR_STARTUP_SECONDS}s for reset...")
-            time.sleep(ACTUATOR_STARTUP_SECONDS)
+            # Open the selected COM port. On the Nano this normally triggers a
+            # reset, causing setup() to run and emit EXPECTED_DEVICE_ID.
+            temp_serial = serial.Serial(
+                port,
+                BAUD_RATE,
+                timeout=0.25,
+                write_timeout=1.0,
+            )
+
+            # Clear only immediately after opening the port. This removes bytes
+            # left over from an earlier session while still giving the freshly
+            # resetting Nano time to send its new startup identification later.
+            temp_serial.reset_input_buffer()
+            temp_serial.reset_output_buffer()
+
+            self.log(
+                f"Port {port} opened. Waiting for actuator identification "
+                f"'{EXPECTED_DEVICE_ID}'..."
+            )
+
+            deadline = time.monotonic() + HANDSHAKE_RESPONSE_SECONDS
+            identified = False
+            received_lines = []
+
+            while time.monotonic() < deadline:
+                raw = temp_serial.readline()
+                if not raw:
+                    continue
+
+                text = raw.decode("ascii", errors="replace").strip()
+                if not text:
+                    continue
+
+                received_lines.append(text)
+                self.log(f"Handshake RX: {text!r}")
+
+                if text == EXPECTED_DEVICE_ID:
+                    identified = True
+                    break
+
+            if not identified:
+                seen = (
+                    " | ".join(received_lines[-5:])
+                    if received_lines
+                    else "no identification received"
+                )
+                self.log(
+                    f"Wrong device or unexpected firmware on {port}. "
+                    f"Expected '{EXPECTED_DEVICE_ID}', received: {seen}"
+                )
+                temp_serial.close()
+                self.root.after(0, self._connection_failed_ui)
+                return
+
+            # Do not clear the input buffer again here. Anything arriving after
+            # the accepted handshake may be a legitimate firmware response.
+            temp_serial.timeout = SERIAL_RESPONSE_TIMEOUT_SECONDS
 
             with self.actuator_lock:
-                temp_serial.reset_input_buffer()
                 self.actuator = temp_serial
 
             def update_ui():
                 self.btn_act_conn.config(text="Actuator Connected")
-                self.lbl_act_status.config(text="Status: Ready")
+                self.lbl_act_status.config(text="Status: Ready / Verified")
                 for w in (
                     self.btn_e1, self.btn_e0, self.rb_s1, self.rb_s2, self.rb_s3,
                     self.speed_entry, self.btn_send_speed, self.btn_up, self.btn_pause,
                     self.btn_down, self.btn_zero, self.btn_start_test, self.btn_enable_quintic,
                 ):
                     w.config(state=tk.NORMAL)
+                self._sync_normal_motion_button_states()
+                self._refresh_state_views()
 
             self.root.after(0, update_ui)
-            self.log("Actuator ready.")
+            self.log(
+                f"Actuator verified on {port}: received expected startup ID. "
+                "Connection accepted."
+            )
+
         except Exception as exc:
+            if temp_serial is not None:
+                try:
+                    temp_serial.close()
+                except Exception:
+                    pass
             self.log(f"Actuator connection failed: {exc}")
-            self.root.after(0, lambda: self._connection_failed_ui())
+            self.root.after(0, self._connection_failed_ui)
 
     def _connection_failed_ui(self):
+        self.actuator = None
         self.btn_act_conn.config(state=tk.NORMAL, text="Connect Actuator")
         self.combo_act_port.config(state=tk.NORMAL)
         self.lbl_act_status.config(text="Status: Disconnected")
@@ -293,20 +388,57 @@ class StandaloneActuatorApp:
             self.log(f"Actuator Write Error ({cmd}): {exc}")
             return False
 
+    def send_direction_command(self, cmd):
+        """Normal-mode direction command with a hard re-click guard until N."""
+        if cmd == "U1" and self.up_locked_until_pause:
+            self.log("UP command ignored: UP remains locked until Pause (N) is pressed.")
+            return False
+        if cmd == "D1" and self.down_locked_until_pause:
+            self.log("DOWN command ignored: DOWN remains locked until Pause (N) is pressed.")
+            return False
+        return self.send_actuator_command(cmd)
+
     def _apply_command_to_local_state(self, cmd):
         if cmd == "U1":
             self.motion_state = "UP"
+            self.up_locked_until_pause = True
         elif cmd == "D1":
             self.motion_state = "DOWN"
-        elif cmd in ("N", "E0"):
+            self.down_locked_until_pause = True
+        elif cmd == "N":
+            self.motion_state = "PAUSED"
+            self.up_locked_until_pause = False
+            self.down_locked_until_pause = False
+        elif cmd == "E0":
             self.motion_state = "PAUSED"
         elif cmd == "Z":
             self.current_position_mm = 0.0
         self.root.after(0, self._refresh_state_views)
 
+    def _sync_normal_motion_button_states(self):
+        """Prevent re-selecting the active direction until Pause (N) is pressed."""
+        connected = bool(self.actuator and self.actuator.is_open)
+        controls_available = connected and not self.quintic_mode_active
+        if not controls_available:
+            self.btn_up.config(state=tk.DISABLED)
+            self.btn_down.config(state=tk.DISABLED)
+            self.btn_pause.config(state=tk.DISABLED)
+            return
+
+        self.btn_pause.config(state=tk.NORMAL)
+        self.btn_up.config(state=tk.DISABLED if self.up_locked_until_pause else tk.NORMAL)
+        self.btn_down.config(state=tk.DISABLED if self.down_locked_until_pause else tk.NORMAL)
+
     def _refresh_state_views(self):
+        applied = self._get_applied_speed_um_min()
+        pos_text = "-- mm" if self.current_position_mm is None else f"{self.current_position_mm:.3f} mm"
+
         if self.current_position_mm is not None:
-            self.lbl_pos.config(text=f"Pos: {self.current_position_mm:.2f} mm")
+            self.lbl_pos.config(text=f"Pos: {self.current_position_mm:.3f} mm")
+        self.lbl_main_current_speed.config(text=self._format_speed(applied))
+        self.lbl_main_motion.config(text=self.motion_state)
+        self.lbl_main_position.config(text=pos_text)
+        self._sync_normal_motion_button_states()
         self._update_popup_state()
 
     # ============================================================
@@ -581,14 +713,20 @@ class StandaloneActuatorApp:
     def _set_normal_motion_controls_enabled(self, enabled):
         connected = bool(self.actuator and self.actuator.is_open)
         state = tk.NORMAL if enabled and connected else tk.DISABLED
-        for widget in (
-            self.rb_s1, self.rb_s2, self.rb_s3, self.speed_entry,
-            self.btn_send_speed, self.btn_up, self.btn_pause, self.btn_down,
-        ):
+        for widget in (self.rb_s1, self.rb_s2, self.rb_s3, self.speed_entry, self.btn_send_speed):
             try:
                 widget.config(state=state)
             except tk.TclError:
                 pass
+
+        if enabled:
+            self._sync_normal_motion_button_states()
+        else:
+            for widget in (self.btn_up, self.btn_pause, self.btn_down):
+                try:
+                    widget.config(state=tk.DISABLED)
+                except tk.TclError:
+                    pass
 
     # ============================================================
     # QUINTIC MATH + VALIDATION
@@ -885,10 +1023,16 @@ class StandaloneActuatorApp:
 
         if reason == "completed":
             self.log(
-                "Quintic ramp completed normally. Motor continues in the same direction at "
-                f"{self._format_speed(self.current_commanded_speed_um_min)}."
+                "Quintic trajectory completed. Final command sent; motor continues in the same "
+                f"direction at {self._format_speed(self.current_commanded_speed_um_min)}."
             )
-        elif reason == "cancelled":
+            self._refresh_state_views()
+            # Successful completion exits Quintic Mode automatically.  A short
+            # UI-cycle delay lets the completion message be appended first.
+            self.root.after(100, self.close_quintic_popup)
+            return
+
+        if reason == "cancelled":
             self.log(
                 "Quintic ramp terminated. Current commanded speed remains "
                 f"{self._format_speed(self.current_commanded_speed_um_min)}."
@@ -896,23 +1040,25 @@ class StandaloneActuatorApp:
         else:
             self.log("Quintic ramp ended because of an execution error.")
 
-        # Keep popup open so the final state/graphs/log remain visible.
-        # To run another trajectory, unlock the inputs and clear old trajectory.
+        # Cancel/error leaves the popup available for inspection or another ramp.
         self.quintic_trajectory = []
-        self.entry_quintic_target.config(state=tk.NORMAL)
-        self.combo_quintic_unit.config(state="readonly")
-        self.entry_quintic_duration.config(state=tk.NORMAL)
-        self.btn_quintic_up.config(state=tk.DISABLED)
-        self.btn_quintic_down.config(state=tk.DISABLED)
-        self.btn_quintic_pause.config(state=tk.DISABLED)
-        self.btn_quintic_cancel.config(state=tk.DISABLED)
-        self.btn_exit_quintic.config(state=tk.NORMAL)
-        self.lbl_popup_start_speed.config(text=self._format_speed(self.current_commanded_speed_um_min))
-        self.lbl_quintic_summary.config(text=f"Current commanded speed: {self._format_speed(self.current_commanded_speed_um_min)}")
-        self.lbl_quintic_validation.config(text="Ramp ended. Enter a new target or exit Quintic Mode.")
-        self._clear_trajectory_table()
-        self._update_quintic_calculate_state()
-        self._update_popup_state()
+        if self._popup_exists():
+            self.entry_quintic_target.config(state=tk.NORMAL)
+            self.combo_quintic_unit.config(state="readonly")
+            self.entry_quintic_duration.config(state=tk.NORMAL)
+            self.btn_quintic_up.config(state=tk.DISABLED)
+            self.btn_quintic_down.config(state=tk.DISABLED)
+            self.btn_quintic_pause.config(state=tk.DISABLED)
+            self.btn_quintic_cancel.config(state=tk.DISABLED)
+            self.btn_exit_quintic.config(state=tk.NORMAL)
+            self.lbl_popup_start_speed.config(text=self._format_speed(self.current_commanded_speed_um_min))
+            self.lbl_quintic_summary.config(
+                text=f"Current commanded speed: {self._format_speed(self.current_commanded_speed_um_min)}"
+            )
+            self.lbl_quintic_validation.config(text="Ramp ended. Enter a new target or exit Quintic Mode.")
+            self._clear_trajectory_table()
+            self._update_quintic_calculate_state()
+            self._update_popup_state()
 
     # ============================================================
     # POPUP STATE + GRAPHS
@@ -929,7 +1075,7 @@ class StandaloneActuatorApp:
             applied = self._get_applied_speed_um_min()
             self.lbl_current_speed_large.config(text=self._format_speed(applied))
             self.lbl_motion_large.config(text=self.motion_state)
-            pos_text = "-- mm" if self.current_position_mm is None else f"{self.current_position_mm:.2f} mm"
+            pos_text = "-- mm" if self.current_position_mm is None else f"{self.current_position_mm:.3f} mm"
             self.lbl_position_large.config(text=pos_text)
         except tk.TclError:
             pass
@@ -969,7 +1115,7 @@ class StandaloneActuatorApp:
 
                 self.lbl_graph_speed.config(text=f"Applied speed: {speed_mm_min:g} mm/min")
                 self.lbl_graph_position.config(
-                    text="Position: -- mm" if position is None else f"Position: {position:.2f} mm"
+                    text="Position: -- mm" if position is None else f"Position: {position:.3f} mm"
                 )
                 self._update_popup_state()
                 self.figure.tight_layout()
@@ -1049,13 +1195,15 @@ class StandaloneActuatorApp:
 
                     if raw:
                         text = raw.decode("ascii", errors="replace").strip()
-                        parts = text.split(",")
-                        pos_mm = float(parts[0].replace(",", "."))
-                        act_time_ms = int(parts[1]) if len(parts) > 1 else None
-                        self.current_position_mm = pos_mm
-                        self.root.after(0, lambda p=pos_mm: self._position_ui_update(p))
-                except Exception:
-                    pass
+                        parsed = self._parse_position_response(text)
+                        if parsed is not None:
+                            pos_mm, act_time_ms = parsed
+                            self.current_position_mm = pos_mm
+                            self.root.after(0, lambda p=pos_mm: self._position_ui_update(p))
+                        else:
+                            self.log(f"Ignored unrecognized P response: {text!r}")
+                except Exception as exc:
+                    self.log(f"Position polling error: {exc}")
 
             if self.test_running and self.csv_writer and pos_mm is not None:
                 elapsed = time.time() - self.start_time
@@ -1072,9 +1220,54 @@ class StandaloneActuatorApp:
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
+    @staticmethod
+    def _parse_position_response(text):
+        """Parse common actuator P responses without assuming one comma format.
+
+        Supported examples:
+          12.3456
+          -0.1250
+          12.3456,12345        (position, hardware-time)
+          12,3456              (decimal comma position)
+          12,3456;12345        (decimal comma position; hardware-time)
+        """
+        text = text.strip()
+        if not text:
+            return None
+
+        # Semicolon safely separates fields when a decimal comma is used.
+        if ";" in text:
+            first, *rest = [part.strip() for part in text.split(";")]
+            try:
+                pos = float(first.replace(",", "."))
+            except ValueError:
+                return None
+            hw_time = None
+            if rest and re.fullmatch(r"[+-]?\d+", rest[0]):
+                hw_time = int(rest[0])
+            return pos, hw_time
+
+        # Dot-decimal position optionally followed by comma + integer hw time.
+        m = re.fullmatch(r"\s*([+-]?\d+(?:\.\d+)?)\s*(?:,\s*([+-]?\d+)\s*)?", text)
+        if m:
+            return float(m.group(1)), int(m.group(2)) if m.group(2) is not None else None
+
+        # If there is one comma and no dot, treat it as a decimal separator.
+        if text.count(",") == 1 and "." not in text:
+            try:
+                return float(text.replace(",", ".")), None
+            except ValueError:
+                return None
+
+        # Last-resort: first conventional floating-point token in the reply.
+        m = re.search(r"[+-]?\d+(?:\.\d+)?", text)
+        if m:
+            return float(m.group(0)), None
+        return None
+
     def _position_ui_update(self, position):
-        self.lbl_pos.config(text=f"Pos: {position:.2f} mm")
-        self._update_popup_state()
+        self.current_position_mm = position
+        self._refresh_state_views()
 
     # ============================================================
     # SHUTDOWN
