@@ -109,7 +109,7 @@ void setup() {
   zeige(1, 2, "AU 21-0-227 R1.33 A");
   delay(2500);
   lcd.clear();
-  Serial.println("COM Port verbunden");
+  Serial.println("COM_Port_verbunden_HTMREETZ_R1.33");
 
   schaltEmporState = !digitalRead(schaltEmpor);
   schaltHinabState = !digitalRead(schaltHinab);
