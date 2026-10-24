@@ -109,6 +109,7 @@ void setup() {
   zeige(1, 2, "AU 21-0-227 R1.33 A");
   delay(2500);
   lcd.clear();
+//used for interface handshake (do not change)
   Serial.println("COM_Port_verbunden_HTMREETZ_R1.33");
 
   schaltEmporState = !digitalRead(schaltEmpor);
