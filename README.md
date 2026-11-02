@@ -1,4 +1,4 @@
-The goal of this project is to build a control unit for the Micro Pull-Down System Apparatus under the research project of the Applied Quantum Materials Department at the University of Duisburg Essen. 
+The goal of this project is to build a control unit for the Micro Pulling-Down System Apparatus under the research project of the Applied Quantum Materials Department at the University of Duisburg Essen. 
 
 The project entails the following key areas :
 
