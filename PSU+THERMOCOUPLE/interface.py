@@ -16,7 +16,11 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 # ============================================================
 HARDWARE_OVP = 10.5         
 PSU_BAUD_RATE = 115200
-DEFAULT_POLL_INTERVAL = 1.0
+
+# Default Rates (Seconds)
+DEFAULT_DAQ_INTERVAL = 0.5
+DEFAULT_PSU_INTERVAL = 0.5
+DEFAULT_LOG_INTERVAL = 1.0
 
 # ============================================================
 # DAQ6510 CONSTANTS & CALIBRATION
@@ -38,7 +42,7 @@ class ThreadedHardwareApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Decoupled Hardware Controller (Ready for PID)")
-        self.root.geometry("1200x800")
+        self.root.geometry("1200x820")
         
         # ========================================================
         # 1. THREADING & SYNCHRONIZATION TOOLS
@@ -77,7 +81,9 @@ class ThreadedHardwareApp:
             
             # --- LOGGING & CONTROL STATE ---
             "test_running": False,
-            "poll_interval_s": DEFAULT_POLL_INTERVAL,
+            "daq_interval_s": DEFAULT_DAQ_INTERVAL,
+            "psu_interval_s": DEFAULT_PSU_INTERVAL,
+            "log_interval_s": DEFAULT_LOG_INTERVAL,
             "test_start_time": 0.0,
             
             # Internal Ramping logic state (to be replaced/augmented by PID)
@@ -120,17 +126,19 @@ class ThreadedHardwareApp:
         last_applied_v = -1.0
         last_applied_i = -1.0
         was_forced_off = False
+        last_telemetry_time = 0.0
         
         while not self.stop_event.is_set():
             if not self.psu or not self.state["psu_connected"]:
                 time.sleep(0.2)
                 continue
                 
-            # 1. READ TARGETS FROM SHARED STATE
+            # 1. READ TARGETS & SETTINGS FROM SHARED STATE
             with self.state_lock:
                 target_v = self.state["target_psu_v"]
                 target_i = self.state["target_psu_i"]
                 force_off = self.state["force_heater_off"]
+                psu_interval = self.state["psu_interval_s"]
                 
             # 2. APPLY HARDWARE COMMANDS (OUTSIDE LOCK)
             try:
@@ -160,31 +168,35 @@ class ThreadedHardwareApp:
                         self._psu_write(self.psu, cmd)
                         last_applied_i = target_i
 
-                # 3. READ TELEMETRY (OUTSIDE LOCK)
-                if self.psu_protocol == "SCPI":
-                    meas_v = float(self._psu_query(self.psu, "MEAS:VOLT?", wait_s=0.05))
-                    meas_i = float(self._psu_query(self.psu, "MEAS:CURR?", wait_s=0.05))
-                else:
-                    meas_v = float(self._psu_query(self.psu, "MV?", wait_s=0.05))
-                    meas_i = float(self._psu_query(self.psu, "MC?", wait_s=0.05))
-                    
-                # 4. WRITE TELEMETRY TO SHARED STATE
-                with self.state_lock:
-                    self.state["actual_psu_v"] = meas_v
-                    self.state["actual_psu_i"] = meas_i
-                    self.state["psu_timestamp"] = time.perf_counter()
+                # 3. READ TELEMETRY ONLY IF THE PSU INTERVAL HAS PASSED
+                current_time = time.perf_counter()
+                if current_time - last_telemetry_time >= psu_interval:
+                    if self.psu_protocol == "SCPI":
+                        meas_v = float(self._psu_query(self.psu, "MEAS:VOLT?", wait_s=0.05))
+                        meas_i = float(self._psu_query(self.psu, "MEAS:CURR?", wait_s=0.05))
+                    else:
+                        meas_v = float(self._psu_query(self.psu, "MV?", wait_s=0.05))
+                        meas_i = float(self._psu_query(self.psu, "MC?", wait_s=0.05))
+                        
+                    # 4. WRITE TELEMETRY TO SHARED STATE
+                    with self.state_lock:
+                        self.state["actual_psu_v"] = meas_v
+                        self.state["actual_psu_i"] = meas_i
+                        self.state["psu_timestamp"] = time.perf_counter()
+                        
+                    last_telemetry_time = current_time
                     
             except Exception as e:
-                # Log without crashing the thread
                 self.log(f"PSU Loop Error: {e}")
                 
-            time.sleep(0.05) # Prevent serial saturation
+            # Thread loops quickly (20Hz) so Ramping and Safe Off remain responsive
+            time.sleep(0.05) 
 
     # ============================================================
     # BACKGROUND THREAD: KEITHLEY DAQ SENSOR
     # ============================================================
     def _daq_thread_loop(self):
-        """Continuously pulls fresh temperatures from Keithley."""
+        """Continuously pulls fresh temperatures from Keithley at its specific interval."""
         while not self.stop_event.is_set():
             # Check if active
             with self.state_lock:
@@ -209,7 +221,11 @@ class ThreadedHardwareApp:
             except Exception as e:
                 self.log(f"DAQ Loop Error: {e}")
                 
-            time.sleep(0.1)
+            # 3. SLEEP DYNAMICALLY BASED ON DAQ INTERVAL
+            with self.state_lock:
+                daq_interval = self.state["daq_interval_s"]
+                
+            self.stop_event.wait(daq_interval)
 
     # ============================================================
     # BACKGROUND THREAD: CONTROL LOGIC (Ramp & Future PID)
@@ -260,14 +276,14 @@ class ThreadedHardwareApp:
     # BACKGROUND THREAD: DATA LOGGER
     # ============================================================
     def _logger_thread_loop(self):
-        """Guarantees CSV writing at exact intervals, immune to hardware lag."""
+        """Guarantees CSV writing at exact log intervals, immune to hardware lag."""
         loop_iteration = 0
         
         while not self.stop_event.is_set():
             with self.state_lock:
                 running = self.state["test_running"]
                 start_t = self.state["test_start_time"]
-                interval = self.state["poll_interval_s"]
+                log_interval = self.state["log_interval_s"]
                 
             if not running or not getattr(self, 'csv_file', None):
                 loop_iteration = 0
@@ -304,7 +320,7 @@ class ThreadedHardwareApp:
                 
             # Exact interval sleep logic
             loop_iteration += 1
-            next_target_time = start_t + (loop_iteration * interval)
+            next_target_time = start_t + (loop_iteration * log_interval)
             sleep_time = next_target_time - time.time()
             if sleep_time > 0:
                 time.sleep(sleep_time)
@@ -382,12 +398,10 @@ class ThreadedHardwareApp:
 
     def _connect_psu(self, port):
         try:
-            # Short-lived thread just to establish the connection blocking-free
             temp_ser = serial.Serial(port=port, baudrate=PSU_BAUD_RATE, timeout=0.6, write_timeout=1.0)
             temp_ser.dtr = True; temp_ser.rts = True
             time.sleep(0.15)
             
-            # Setup SCPI (simplified for brevity)
             self._psu_write(temp_ser, "INST:NSEL 6")
             time.sleep(0.1)
             temp_ser.reset_input_buffer()
@@ -448,15 +462,32 @@ class ThreadedHardwareApp:
             self.log(f"DAQ Connect Error: {e}")
             self.root.after(0, lambda: self.btn_daq_conn.config(state=tk.NORMAL))
 
+    def update_system_rates(self):
+        try:
+            daq = float(self.entry_daq_interval.get())
+            psu = float(self.entry_psu_interval.get())
+            log = float(self.entry_log_interval.get())
+            
+            if daq <= 0 or psu <= 0 or log <= 0:
+                raise ValueError("Rates must be > 0")
+                
+            with self.state_lock:
+                self.state["daq_interval_s"] = daq
+                self.state["psu_interval_s"] = psu
+                self.state["log_interval_s"] = log
+                
+            self.log(f"Rates Updated -> DAQ: {daq}s | PSU: {psu}s | Log: {log}s")
+        except Exception as e:
+            self.log("Error updating rates. Ensure inputs are positive numbers.")
+
     def start_current_ramp(self):
         try:
             target_v = float(self.entry_target_v.get())
             target_i = float(self.entry_target_i.get())
             rate_min = float(self.entry_ramp_rate.get())
             
-            # Post command to shared state instead of serial write
             with self.state_lock:
-                self.state["target_psu_v"] = target_v # Voltage jumps immediately
+                self.state["target_psu_v"] = target_v
                 self.state["ramp_target_i"] = target_i
                 self.state["ramp_rate_A_sec"] = rate_min / 60.0
                 self.state["force_heater_off"] = False
@@ -482,10 +513,10 @@ class ThreadedHardwareApp:
         self.log("🛑 SAFE OFF TRIGGERED. Heater disabled via hardware.")
 
     def start_test(self):
+        # Force a read of the rates before starting
+        self.update_system_rates()
+        
         try:
-            interval = float(self.entry_poll_interval.get())
-            if interval <= 0: raise ValueError("Interval > 0")
-            
             filename = f"daq_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             self.csv_file = open(filename, mode='w', newline='')
             self.csv_writer = csv.writer(self.csv_file)
@@ -497,7 +528,6 @@ class ThreadedHardwareApp:
             for ch in CHANNELS: self.temp_data[ch].clear()
                 
             with self.state_lock:
-                self.state["poll_interval_s"] = interval
                 self.state["test_start_time"] = time.time()
                 self.state["test_running"] = True
                 
@@ -533,16 +563,36 @@ class ThreadedHardwareApp:
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        logging_frame = ttk.LabelFrame(main_frame, text="Synchronized Data Logging", padding=8)
-        logging_frame.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(logging_frame, text="Poll Interval (s):").pack(side=tk.LEFT)
-        self.entry_poll_interval = ttk.Entry(logging_frame, width=10); self.entry_poll_interval.pack(side=tk.LEFT, padx=5)
-        self.entry_poll_interval.insert(0, "1.0")
-        self.btn_start_test = ttk.Button(logging_frame, text="Start Log", command=self.start_test, state=tk.DISABLED)
-        self.btn_start_test.pack(side=tk.LEFT, padx=5)
-        self.btn_stop_test = ttk.Button(logging_frame, text="Stop Log", command=self.stop_test, state=tk.DISABLED)
-        self.btn_stop_test.pack(side=tk.LEFT, padx=5)
+        # === SYSTEM RATES & LOGGING FRAME ===
+        rates_frame = ttk.LabelFrame(main_frame, text="System Rates & Logging", padding=8)
+        rates_frame.pack(fill=tk.X, pady=(0, 8))
+        
+        # Row 0: Intervals
+        ttk.Label(rates_frame, text="DAQ Poll (s):").grid(row=0, column=0, padx=5, sticky="e")
+        self.entry_daq_interval = ttk.Entry(rates_frame, width=8)
+        self.entry_daq_interval.insert(0, str(DEFAULT_DAQ_INTERVAL))
+        self.entry_daq_interval.grid(row=0, column=1, padx=5, sticky="w")
+        
+        ttk.Label(rates_frame, text="PSU Poll (s):").grid(row=0, column=2, padx=5, sticky="e")
+        self.entry_psu_interval = ttk.Entry(rates_frame, width=8)
+        self.entry_psu_interval.insert(0, str(DEFAULT_PSU_INTERVAL))
+        self.entry_psu_interval.grid(row=0, column=3, padx=5, sticky="w")
+        
+        ttk.Label(rates_frame, text="Log Rate (s):").grid(row=0, column=4, padx=5, sticky="e")
+        self.entry_log_interval = ttk.Entry(rates_frame, width=8)
+        self.entry_log_interval.insert(0, str(DEFAULT_LOG_INTERVAL))
+        self.entry_log_interval.grid(row=0, column=5, padx=5, sticky="w")
 
+        self.btn_apply_rates = ttk.Button(rates_frame, text="Update Rates", command=self.update_system_rates)
+        self.btn_apply_rates.grid(row=0, column=6, padx=15)
+        
+        # Row 1: Start/Stop
+        self.btn_start_test = ttk.Button(rates_frame, text="Start Data Log", command=self.start_test, state=tk.DISABLED)
+        self.btn_start_test.grid(row=1, column=0, columnspan=2, pady=8, sticky="ew", padx=5)
+        self.btn_stop_test = ttk.Button(rates_frame, text="Stop Data Log", command=self.stop_test, state=tk.DISABLED)
+        self.btn_stop_test.grid(row=1, column=2, columnspan=2, pady=8, sticky="ew", padx=5)
+
+        # === CONTROL FRAME ===
         control_frame = ttk.Frame(main_frame)
         control_frame.pack(fill=tk.X, pady=(0, 10))
 
