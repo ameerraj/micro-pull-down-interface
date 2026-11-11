@@ -105,13 +105,16 @@ class UnifiedHardwareApp:
         self.quintic_unit_var = tk.StringVar(value="mm/min")
         self.quintic_duration_var = tk.StringVar(value="120")
 
-        # Quintic popup graph state (kept separate from integrated main graph)
+        # Quintic popup graph state
         self.graph_start_time = time.monotonic()
-        self.graph_x = [0.0]
-        self.graph_y = [0.0]
-        self.position_graph_x = [0.0]
-        self.position_graph_y = [0.0]
+        self.graph_x = []
+        self.graph_y = []
+        self.position_graph_x = []
+        self.position_graph_y = []
         self.log_history = []
+        
+        self.popup_line_speed = None
+        self.popup_line_pos = None
 
         # Port lists
         self.available_psu_com = []
@@ -125,8 +128,6 @@ class UnifiedHardwareApp:
         self.pos_data = []
         self.temp_data = {ch: [] for ch in CHANNELS}
 
-        # Thermocouple graph visibility only. Acquisition and CSV logging always
-        # continue for all five DAQ channels regardless of these selections.
         self.temp_channel_visible = {
             ch: tk.BooleanVar(value=True) for ch in CHANNELS
         }
@@ -147,7 +148,6 @@ class UnifiedHardwareApp:
         self.poll_thread.start()
 
     def scan_ports(self):
-        # 1. Scan VISA for USB/TCPIP instruments (Keithley DAQ6510)
         try:
             resources = self.rm.list_resources()
             self.available_usb_visa = [r for r in resources if "USB" in r or "TCPIP" in r]
@@ -156,19 +156,16 @@ class UnifiedHardwareApp:
             print(f"VISA Scan Error: {e}")
             self.available_usb_visa = []
 
-        # 2. Scan OS COM ports for PSU (VID:PID 2504:0002 / COM4) and Actuator (Arduino / FTDI / CH340)
         try:
             com_ports = serial.tools.list_ports.comports()
             self.available_psu_com = []
             self.available_act_com = []
             for p in com_ports:
-                # Prioritize TDK-Lambda USB-CDC (2504:0002) for PSU list
                 if "2504:0002" in p.hwid or p.device == "COM4":
                     self.available_psu_com.insert(0, p.device)
                 else:
                     self.available_psu_com.append(p.device)
 
-                # Prioritize Arduino/FTDI/CH340 (and non-PSU ports) for Actuator list
                 if "2504:0002" not in p.hwid and (
                     "Arduino" in p.description or "CH340" in p.description
                     or "CP210" in p.description or "0403:6001" in p.hwid
@@ -188,7 +185,6 @@ class UnifiedHardwareApp:
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # ==================== GENERAL DATA LOGGING ====================
         logging_frame = ttk.LabelFrame(main_frame, text="Synchronized Data Logging", padding=8)
         logging_frame.pack(fill=tk.X, pady=(0, 8))
         logging_frame.columnconfigure(1, weight=1)
@@ -205,7 +201,6 @@ class UnifiedHardwareApp:
         self.btn_stop_test = ttk.Button(logging_frame, text="Stop Log", command=self.stop_test, state=tk.DISABLED)
         self.btn_stop_test.grid(row=0, column=3, sticky="ew", padx=2)
 
-        # ==================== HARDWARE CONTROLS ====================
         control_frame = ttk.Frame(main_frame)
         control_frame.pack(fill=tk.X, pady=(0, 10))
 
@@ -259,7 +254,6 @@ class UnifiedHardwareApp:
         self.lbl_v_meas.grid(row=5, column=0, columnspan=2, pady=5)
         self.lbl_i_meas = ttk.Label(psu_frame, text="Meas I: -- A", font=("Arial", 11, "bold"), foreground="green")
         self.lbl_i_meas.grid(row=5, column=2, columnspan=2, pady=5)
-
 
         # --- ACTUATOR CONTROLS ---
         act_frame = ttk.LabelFrame(control_frame, text="Arduino Motor Control", padding=10)
@@ -315,7 +309,6 @@ class UnifiedHardwareApp:
         self.btn_enable_quintic = ttk.Button(act_frame, text="Enable Quintic Mode...", state=tk.DISABLED, command=self.open_quintic_popup)
         self.btn_enable_quintic.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(8, 4))
 
-        # Current actuator state is embedded directly in the actuator section.
         main_state = ttk.LabelFrame(act_frame, text="Current Actuator State", padding=6)
         main_state.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(4, 0))
         for i in range(3):
@@ -357,8 +350,6 @@ class UnifiedHardwareApp:
         self.lbl_daq_temps = ttk.Label(daq_frame, text="Temps: -- °C", font=("Arial", 11), wraplength=200)
         self.lbl_daq_temps.pack(pady=(8, 5))
 
-        # Graph-only channel filter. These controls never change which channels
-        # the DAQ acquires or which values are written to the CSV file.
         channel_filter = ttk.LabelFrame(daq_frame, text="Graph Channels", padding=5)
         channel_filter.pack(fill=tk.X, pady=(3, 5))
 
@@ -385,8 +376,6 @@ class UnifiedHardwareApp:
         ).grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
         # ==================== BOTTOM ROW: SYSTEM LOG ====================
-        # Anchor the log before creating the expanding graph. Keeping it on the
-        # bottom prevents the taller actuator section from pushing it off-screen.
         log_frame = ttk.LabelFrame(main_frame, text="System Log", padding=5)
         log_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
 
@@ -394,8 +383,6 @@ class UnifiedHardwareApp:
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
         # ==================== MIDDLE ROW: GRAPHS ====================
-        # The graph receives only the space left between the controls and the
-        # bottom-anchored System Log.
         graph_frame = ttk.Frame(main_frame)
         graph_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -467,12 +454,10 @@ class UnifiedHardwareApp:
 
     # ------------------- PSU PYSERIAL METHODS -------------------
     def _psu_write(self, ser_inst, cmd):
-        """Writes command with \r\n termination over PySerial."""
         ser_inst.write(f"{cmd}\r\n".encode("ascii"))
         ser_inst.flush()
 
     def _psu_query(self, ser_inst, cmd, wait_s=0.08):
-        """Writes command and reads back until \r or timeout."""
         ser_inst.reset_input_buffer()
         self._psu_write(ser_inst, cmd)
         time.sleep(wait_s)
@@ -482,7 +467,6 @@ class UnifiedHardwareApp:
         return raw.decode("ascii", errors="replace").strip()
 
     def check_psu_Command(self, ser_inst, cmd):
-        """Sends a command to the PSU and checks for immediate reply or SCPI error."""
         ser_inst.reset_input_buffer()
         self._psu_write(ser_inst, cmd)
         time.sleep(0.08)
@@ -530,7 +514,6 @@ class UnifiedHardwareApp:
                     rtscts=False,
                     dsrdtr=False
                 )
-                # Assert DTR & RTS required by TDK-Lambda Genesys+ USB CDC (2504:0002)
                 temp_ser.dtr = True
                 temp_ser.rts = True
                 time.sleep(0.15)
@@ -541,7 +524,6 @@ class UnifiedHardwareApp:
                 self.psu_protocol = None
 
                 for addr in [6, 1, 0]:
-                    # 1. Try SCPI Mode (Genesys+ GSP)
                     self._psu_write(temp_ser, f"INST:NSEL {addr}")
                     time.sleep(0.1)
                     temp_ser.reset_input_buffer()
@@ -552,7 +534,6 @@ class UnifiedHardwareApp:
                         self.log(f"✅ PSU Connected (SCPI Addr {addr}): {connected_idn}")
                         break
 
-                    # 2. Try GEN Mode
                     resp = self._psu_query(temp_ser, f"ADR {addr:02d}", wait_s=0.15)
                     if "OK" in resp:
                         connected_idn = self._psu_query(temp_ser, "IDN?", wait_s=0.15)
@@ -706,7 +687,7 @@ class UnifiedHardwareApp:
             self.root.after(0, lambda: self.btn_stop_ramp.config(state=tk.DISABLED))
             self.log(f"Ramp complete. Reached target {self.psu_target_i} A.")
 
-    # ------------------- ACTUATOR METHODS (NEW MODULE) -------------------
+    # ------------------- ACTUATOR METHODS -------------------
     def connect_actuator_thread(self):
         selected_port = self.combo_act_port.get().strip()
         if not selected_port:
@@ -721,8 +702,6 @@ class UnifiedHardwareApp:
     def _connect_actuator(self, port):
         temp_serial = None
         try:
-            # Open the selected COM port. On the Nano this normally triggers a
-            # reset, causing setup() to run and emit EXPECTED_DEVICE_ID.
             temp_serial = serial.Serial(
                 port,
                 BAUD_RATE,
@@ -730,9 +709,6 @@ class UnifiedHardwareApp:
                 write_timeout=1.0,
             )
 
-            # Clear only immediately after opening the port. This removes bytes
-            # left over from an earlier session while still giving the freshly
-            # resetting Nano time to send its new startup identification later.
             temp_serial.reset_input_buffer()
             temp_serial.reset_output_buffer()
 
@@ -775,8 +751,6 @@ class UnifiedHardwareApp:
                 self.root.after(0, self._connection_failed_ui)
                 return
 
-            # Do not clear the input buffer again here. Anything arriving after
-            # the accepted handshake may be a legitimate firmware response.
             temp_serial.timeout = SERIAL_RESPONSE_TIMEOUT_SECONDS
 
             with self.actuator_lock:
@@ -817,7 +791,6 @@ class UnifiedHardwareApp:
         self.lbl_act_status.config(text="Status: Disconnected")
 
     def send_actuator_command(self, cmd):
-        """Single serial write path used by normal controls and quintic mode."""
         if not (self.actuator and self.actuator.is_open):
             self.log(f"Command blocked; actuator is not connected: {cmd}")
             return False
@@ -834,7 +807,6 @@ class UnifiedHardwareApp:
             return False
 
     def send_direction_command(self, cmd):
-        """Normal-mode direction command with a hard re-click guard until N."""
         if cmd == "U1" and self.up_locked_until_pause:
             self.log("UP command ignored: UP remains locked until Pause (N) is pressed.")
             return False
@@ -861,7 +833,6 @@ class UnifiedHardwareApp:
         self.root.after(0, self._refresh_state_views)
 
     def _sync_normal_motion_button_states(self):
-        """Prevent re-selecting the active direction until Pause (N) is pressed."""
         connected = bool(self.actuator and self.actuator.is_open)
         controls_available = connected and not self.quintic_mode_active
         if not controls_available:
@@ -1075,6 +1046,8 @@ class UnifiedHardwareApp:
         self.ax.set_xlabel("Elapsed time (s)")
         self.ax.set_ylabel("Speed (mm/min)")
         self.ax.grid(True, alpha=0.3)
+        self.popup_line_speed, = self.ax.plot([], [], 'b-', linewidth=2)
+        
         self.quintic_speed_canvas = FigureCanvasTkAgg(self.figure, master=speed_frame)
         self.quintic_speed_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
@@ -1091,6 +1064,8 @@ class UnifiedHardwareApp:
         self.position_ax.set_xlabel("Elapsed time (s)")
         self.position_ax.set_ylabel("Position (mm)")
         self.position_ax.grid(True, alpha=0.3)
+        self.popup_line_pos, = self.position_ax.plot([], [], 'g-', linewidth=2)
+        
         self.position_canvas = FigureCanvasTkAgg(self.position_figure, master=position_frame)
         self.position_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
@@ -1147,6 +1122,8 @@ class UnifiedHardwareApp:
         if self._popup_exists():
             self.quintic_popup.destroy()
         self.quintic_popup = None
+        self.popup_line_speed = None
+        self.popup_line_pos = None
         self.log("Exited Quintic Mode. Normal controls restored.")
 
     def _set_normal_motion_controls_enabled(self, enabled):
@@ -1376,7 +1353,6 @@ class UnifiedHardwareApp:
             trajectory = list(self.quintic_trajectory)
             duration = float(self.quintic_duration_seconds)
 
-            # No preload: apply the first scheduled S command, then direction once.
             if not self._apply_quintic_speed(trajectory[0]):
                 reason = "cancelled" if self.quintic_stop_event.is_set() else "error"
                 return
@@ -1409,8 +1385,6 @@ class UnifiedHardwareApp:
                     reason = "completed"
                     return
 
-                # If serial polling temporarily occupied the lock, apply only the newest
-                # trajectory point that is due. This prevents cumulative schedule drift.
                 latest_due_index = None
                 scan_index = next_index
                 while scan_index < len(trajectory) and trajectory[scan_index]["time_s"] <= elapsed:
@@ -1460,8 +1434,6 @@ class UnifiedHardwareApp:
                 f"direction at {self._format_speed(self.current_commanded_speed_um_min)}."
             )
             self._refresh_state_views()
-            # Successful completion exits Quintic Mode automatically. A short
-            # UI-cycle delay lets the completion message be appended first.
             self.root.after(100, self.close_quintic_popup)
             return
 
@@ -1473,7 +1445,6 @@ class UnifiedHardwareApp:
         else:
             self.log("Quintic ramp ended because of an execution error.")
 
-        # Cancel/error leaves the popup available for inspection or another ramp.
         self.quintic_trajectory = []
         if self._popup_exists():
             self.entry_quintic_target.config(state=tk.NORMAL)
@@ -1494,7 +1465,9 @@ class UnifiedHardwareApp:
             self._update_popup_state()
 
     def _get_applied_speed_um_min(self):
-        if self.motion_state == "PAUSED" or self.current_commanded_speed_um_min is None:
+        if self.motion_state == "PAUSED":
+            return 0.0
+        if self.current_commanded_speed_um_min is None:
             return 0.0
         return float(self.current_commanded_speed_um_min)
 
@@ -1514,10 +1487,10 @@ class UnifiedHardwareApp:
         if not self.polling_active:
             return
 
-        if self._popup_exists() and hasattr(self, "quintic_speed_canvas"):
+        if self._popup_exists() and hasattr(self, "quintic_speed_canvas") and self.popup_line_speed:
             try:
                 elapsed = time.monotonic() - self.graph_start_time
-                speed_mm_min = self._get_applied_speed_um_min() / 1000.0
+                speed_mm_min = (self.current_commanded_speed_um_min or 0.0) / 1000.0 if self.motion_state != "PAUSED" else 0.0
                 position = self.current_position_mm
 
                 self.graph_x.append(elapsed)
@@ -1527,29 +1500,27 @@ class UnifiedHardwareApp:
 
                 cutoff = max(0.0, elapsed - GRAPH_HISTORY_SECONDS)
                 while len(self.graph_x) > 2 and self.graph_x[1] < cutoff:
-                    self.graph_x.pop(0); self.graph_y.pop(0)
+                    self.graph_x.pop(0)
+                    self.graph_y.pop(0)
                 while len(self.position_graph_x) > 2 and self.position_graph_x[1] < cutoff:
-                    self.position_graph_x.pop(0); self.position_graph_y.pop(0)
+                    self.position_graph_x.pop(0)
+                    self.position_graph_y.pop(0)
 
-                self.ax.clear()
-                self.ax.set_xlabel("Elapsed time (s)")
-                self.ax.set_ylabel("Speed (mm/min)")
-                self.ax.grid(True, alpha=0.3)
-                self.ax.plot(self.graph_x, self.graph_y, linewidth=2)
+                # Efficiently update trace datasets instead of clearing/rebuilding axes
+                self.popup_line_speed.set_data(self.graph_x, self.graph_y)
+                self.ax.relim()
+                self.ax.autoscale_view()
 
-                self.position_ax.clear()
-                self.position_ax.set_xlabel("Elapsed time (s)")
-                self.position_ax.set_ylabel("Position (mm)")
-                self.position_ax.grid(True, alpha=0.3)
-                self.position_ax.plot(self.position_graph_x, self.position_graph_y, linewidth=2)
+                self.popup_line_pos.set_data(self.position_graph_x, self.position_graph_y)
+                self.position_ax.relim()
+                self.position_ax.autoscale_view()
 
                 self.lbl_graph_speed.config(text=f"Applied speed: {speed_mm_min:g} mm/min")
                 self.lbl_graph_position.config(
                     text="Position: -- mm" if position is None else f"Position: {position:.3f} mm"
                 )
                 self._update_popup_state()
-                self.figure.tight_layout()
-                self.position_figure.tight_layout()
+
                 self.quintic_speed_canvas.draw_idle()
                 self.position_canvas.draw_idle()
             except tk.TclError:
@@ -1559,28 +1530,29 @@ class UnifiedHardwareApp:
 
     def clear_graph(self):
         self.graph_start_time = time.monotonic()
-        self.graph_x = [0.0]
-        self.graph_y = [self._get_applied_speed_um_min() / 1000.0]
-        self.position_graph_x = [0.0]
-        self.position_graph_y = [float("nan") if self.current_position_mm is None else self.current_position_mm]
+        self.graph_x = []
+        self.graph_y = []
+        self.position_graph_x = []
+        self.position_graph_y = []
+        if self.popup_line_speed:
+            self.popup_line_speed.set_data([], [])
+            self.ax.relim()
+            self.ax.autoscale_view()
+        if self.popup_line_pos:
+            self.popup_line_pos.set_data([], [])
+            self.position_ax.relim()
+            self.position_ax.autoscale_view()
+        if hasattr(self, "quintic_speed_canvas"):
+            self.quintic_speed_canvas.draw_idle()
+            self.position_canvas.draw_idle()
         self.log("Live speed and position graphs cleared.")
 
     @staticmethod
     def _parse_position_response(text):
-        """Parse common actuator P responses without assuming one comma format.
-
-        Supported examples:
-          12.3456
-          -0.1250
-          12.3456,12345        (position, hardware-time)
-          12,3456              (decimal comma position)
-          12,3456;12345        (decimal comma position; hardware-time)
-        """
         text = text.strip()
         if not text:
             return None
 
-        # Semicolon safely separates fields when a decimal comma is used.
         if ";" in text:
             first, *rest = [part.strip() for part in text.split(";")]
             try:
@@ -1592,19 +1564,16 @@ class UnifiedHardwareApp:
                 hw_time = int(rest[0])
             return pos, hw_time
 
-        # Dot-decimal position optionally followed by comma + integer hw time.
         m = re.fullmatch(r"\s*([+-]?\d+(?:\.\d+)?)\s*(?:,\s*([+-]?\d+)\s*)?", text)
         if m:
             return float(m.group(1)), int(m.group(2)) if m.group(2) is not None else None
 
-        # If there is one comma and no dot, treat it as a decimal separator.
         if text.count(",") == 1 and "." not in text:
             try:
                 return float(text.replace(",", ".")), None
             except ValueError:
                 return None
 
-        # Last-resort: first conventional floating-point token in the reply.
         m = re.search(r"[+-]?\d+(?:\.\d+)?", text)
         if m:
             return float(m.group(0)), None
@@ -1765,13 +1734,11 @@ class UnifiedHardwareApp:
         self.log("Data logging stopped.")
 
     def _set_all_temp_channels(self, visible):
-        """Select or clear all thermocouple lines without affecting acquisition."""
         for ch in CHANNELS:
             self.temp_channel_visible[ch].set(bool(visible))
         self._on_temp_channel_visibility_changed()
 
     def _on_temp_channel_visibility_changed(self):
-        """Apply the thermocouple display filter and refresh legend/scale."""
         if not hasattr(self, "line_temps"):
             return
 
@@ -1783,7 +1750,6 @@ class UnifiedHardwareApp:
             self.canvas.draw_idle()
 
     def _refresh_temp_legend_and_scale(self):
-        """Keep the thermocouple legend and Y-axis tied to visible channels only."""
         visible_lines = [
             self.line_temps[ch]
             for ch in CHANNELS
@@ -1804,8 +1770,6 @@ class UnifiedHardwareApp:
             self.ax_temp.relim(visible_only=True)
             self.ax_temp.autoscale_view()
         else:
-            # An empty selection is valid. Keep the graph usable rather than
-            # stopping DAQ acquisition or treating it as an error.
             self.ax_temp.set_ylim(auto=True)
 
     def update_plots(self):
@@ -1871,7 +1835,7 @@ class UnifiedHardwareApp:
                 except Exception as e:
                     self.log(f"PSU Poll Error: {e}")
 
-            # 2. Query Actuator -- this is the ONLY P polling/read path.
+            # 2. Query Actuator
             if self.actuator and self.actuator.is_open:
                 try:
                     t_start_act = time.perf_counter()
