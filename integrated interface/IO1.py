@@ -807,13 +807,38 @@ class UnifiedHardwareApp:
             return False
 
     def send_direction_command(self, cmd):
-        if cmd == "U1" and self.up_locked_until_pause:
-            self.log("UP command ignored: UP remains locked until Pause (N) is pressed.")
-            return False
-        if cmd == "D1" and self.down_locked_until_pause:
-            self.log("DOWN command ignored: DOWN remains locked until Pause (N) is pressed.")
-            return False
-        return self.send_actuator_command(cmd)
+            # 1. Evaluate directional locks
+            if cmd == "U1" and self.up_locked_until_pause:
+                self.log("UP command ignored: UP remains locked until Pause (N) is pressed.")
+                return False
+            if cmd == "D1" and self.down_locked_until_pause:
+                self.log("DOWN command ignored: DOWN remains locked until Pause (N) is pressed.")
+                return False
+
+            # 2. Check if motor is actively moving in the OPPOSITE direction
+            opposing_motion = (self.motion_state == "DOWN" and cmd == "U1") or \
+                            (self.motion_state == "UP" and cmd == "D1")
+
+            if opposing_motion and self.actuator and self.actuator.is_open:
+                self.log(f"Direction inversion requested ({self.motion_state} -> {'UP' if cmd == 'U1' else 'DOWN'}). Executing multi-stage hardware transition...")
+                
+                # Step A: Send Pause command & explicitly clear local lock flags
+                self.send_actuator_command("N")
+                self.up_locked_until_pause = False
+                self.down_locked_until_pause = False
+                self.motion_state = "PAUSED"
+                
+                # Step B: Hardware settling delay (allow step timers to return to IDLE)
+                time.sleep(0.08)
+
+                # Step C: Re-send speed command through standard actuator pipeline
+                if self.current_commanded_speed_um_min is not None:
+                    cmd_str, _ = self._speed_to_supported_command(self.current_commanded_speed_um_min)
+                    self.send_actuator_command(cmd_str)
+                    time.sleep(0.05)  # Wait for Arduino parsing buffer to clear speed command
+
+            # Step D: Dispatch final target direction vector (U1 / D1)
+            return self.send_actuator_command(cmd)
 
     def _apply_command_to_local_state(self, cmd):
         if cmd == "U1":
