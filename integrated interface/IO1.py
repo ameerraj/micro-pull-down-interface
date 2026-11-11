@@ -385,7 +385,7 @@ class UnifiedHardwareApp:
         ).grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
         # ==================== BOTTOM ROW: SYSTEM LOG ====================
-        # Anchor the log before creating the expanding graph.  Keeping it on the
+        # Anchor the log before creating the expanding graph. Keeping it on the
         # bottom prevents the taller actuator section from pushing it off-screen.
         log_frame = ttk.LabelFrame(main_frame, text="System Log", padding=5)
         log_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
@@ -1167,6 +1167,7 @@ class UnifiedHardwareApp:
                 except tk.TclError:
                     pass
 
+    @staticmethod
     def _format_speed(speed_um_min):
         if speed_um_min is None:
             return "--"
@@ -1228,9 +1229,11 @@ class UnifiedHardwareApp:
             text="Inputs valid. Ready to calculate trajectory." if valid and not inputs_locked else message
         )
 
+    @staticmethod
     def _quintic_blend(u):
         return 10 * u**3 - 15 * u**4 + 6 * u**5
 
+    @staticmethod
     def _round_half_up_positive(value):
         return int(math.floor(value + 0.5))
 
@@ -1457,7 +1460,7 @@ class UnifiedHardwareApp:
                 f"direction at {self._format_speed(self.current_commanded_speed_um_min)}."
             )
             self._refresh_state_views()
-            # Successful completion exits Quintic Mode automatically.  A short
+            # Successful completion exits Quintic Mode automatically. A short
             # UI-cycle delay lets the completion message be appended first.
             self.root.after(100, self.close_quintic_popup)
             return
@@ -1562,6 +1565,7 @@ class UnifiedHardwareApp:
         self.position_graph_y = [float("nan") if self.current_position_mm is None else self.current_position_mm]
         self.log("Live speed and position graphs cleared.")
 
+    @staticmethod
     def _parse_position_response(text):
         """Parse common actuator P responses without assuming one comma format.
 
