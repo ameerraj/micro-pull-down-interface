@@ -61,6 +61,7 @@ class UnifiedHardwareApp:
         
         self.psu = None           # serial.Serial instance (TDK-Lambda GSP)
         self.psu_protocol = "SCPI"
+        self.psu_local_mode = False
         self.actuator = None      # serial.Serial instance (Arduino)
         self.daq = None           # pyvisa Resource (Keithley DAQ6510)
         
@@ -248,7 +249,10 @@ class UnifiedHardwareApp:
         self.btn_stop_ramp.grid(row=3, column=3, pady=5, sticky="ew", padx=2)
 
         self.btn_safe_off = ttk.Button(psu_frame, text="🛑 SAFELY TURN OFF HEATER", command=self.safe_heater_off, state=tk.DISABLED)
-        self.btn_safe_off.grid(row=4, column=0, columnspan=4, pady=5, sticky="ew")
+        self.btn_safe_off.grid(row=4, column=0, columnspan=2, pady=5, sticky="ew", padx=(0, 2))
+
+        self.btn_psu_local = ttk.Button(psu_frame, text="Pass to Local (LOC)", command=self.set_psu_local, state=tk.DISABLED)
+        self.btn_psu_local.grid(row=4, column=2, columnspan=2, pady=5, sticky="ew", padx=(2, 0))
 
         self.lbl_v_meas = ttk.Label(psu_frame, text="Meas V: -- V", font=("Arial", 11, "bold"), foreground="green")
         self.lbl_v_meas.grid(row=5, column=0, columnspan=2, pady=5)
@@ -549,7 +553,7 @@ class UnifiedHardwareApp:
 
                 if self.psu_protocol == "SCPI":
                     for cmd in [
-                        "SYST:SET REM",
+                        "SYST:REM:STAT REM",
                         f"VOLT:PROT:LEV {HARDWARE_OVP}",
                         "VOLT 0.0",
                         "CURR 0.0",
@@ -566,12 +570,14 @@ class UnifiedHardwareApp:
                     ]:
                         self.check_psu_Command(temp_ser, cmd)
 
+                self.psu_local_mode = False
                 self.psu = temp_ser
             
             def update_ui():
                 self.btn_psu_conn.config(text="PSU Connected", state=tk.DISABLED)
                 self.btn_apply.config(state=tk.NORMAL)
                 self.btn_safe_off.config(state=tk.NORMAL)
+                self.btn_psu_local.config(state=tk.NORMAL)
                 self.check_enable_test()
                 self.log(f"PSU active in REM mode ({self.psu_protocol}). Output enabled at 0V / 0A.")
             
@@ -607,10 +613,15 @@ class UnifiedHardwareApp:
                 return
 
             with self.psu_lock:
+                self.psu_local_mode = False
                 if self.psu_protocol == "SCPI":
+                    self.check_psu_Command(self.psu, "SYST:REM:STAT REM")
+                    self.check_psu_Command(self.psu, "OUTP ON")
                     self.check_psu_Command(self.psu, f"VOLT {target_v}")
                     current_setpoint_str = self._psu_query(self.psu, "CURR?")
                 else:
+                    self.check_psu_Command(self.psu, "RMT 1")
+                    self.check_psu_Command(self.psu, "OUT 1")
                     self.check_psu_Command(self.psu, f"PV {target_v}")
                     current_setpoint_str = self._psu_query(self.psu, "PC?")
                 
@@ -634,6 +645,29 @@ class UnifiedHardwareApp:
             self.btn_stop_ramp.config(state=tk.DISABLED)
             self.log(f"Ramp manually stopped. Holding at {self.psu_current_setpoint:.3f} A.")
 
+    def set_psu_local(self):
+        if not self.psu:
+            return
+        if self.ramping_active:
+            self.stop_current_ramp()
+        try:
+            with self.psu_lock:
+                self.psu_local_mode = True
+                if self.psu_protocol == "SCPI":
+                    self._psu_write(self.psu, "SYST:REM:STAT LOC")
+                else:
+                    self._psu_write(self.psu, "RMT 0")
+                    time.sleep(0.05)
+                    if self.psu.in_waiting > 0:
+                        self.psu.read(self.psu.in_waiting)
+            self.root.after(0, lambda: [
+                self.lbl_v_meas.config(text="Meas V: LOCAL"),
+                self.lbl_i_meas.config(text="Meas I: LOCAL")
+            ])
+            self.log("PSU passed to Local mode via SYST:REM:STAT LOC (polling paused so REM stays off).")
+        except Exception as e:
+            self.log(f"Error switching PSU to Local mode: {e}")
+
     def safe_heater_off(self):
         if not self.psu:
             return
@@ -641,11 +675,14 @@ class UnifiedHardwareApp:
         self.btn_stop_ramp.config(state=tk.DISABLED)
         try:
             with self.psu_lock:
+                self.psu_local_mode = False
                 if self.psu_protocol == "SCPI":
+                    self.check_psu_Command(self.psu, "SYST:REM:STAT REM")
                     self.check_psu_Command(self.psu, "VOLT 0.0")
                     self.check_psu_Command(self.psu, "CURR 0.0")
                     self.check_psu_Command(self.psu, "OUTP OFF")
                 else:
+                    self.check_psu_Command(self.psu, "RMT 1")
                     self.check_psu_Command(self.psu, "PV 0.0")
                     self.check_psu_Command(self.psu, "PC 0.0")
                     self.check_psu_Command(self.psu, "OUT 0")
@@ -654,7 +691,7 @@ class UnifiedHardwareApp:
             self.log(f"Error during Safe Off: {e}")
 
     def process_ramping(self):
-        if not self.ramping_active or not self.psu:
+        if not self.ramping_active or not self.psu or self.psu_local_mode:
             return
 
         now = time.time()
@@ -807,38 +844,38 @@ class UnifiedHardwareApp:
             return False
 
     def send_direction_command(self, cmd):
-            # 1. Evaluate directional locks
-            if cmd == "U1" and self.up_locked_until_pause:
-                self.log("UP command ignored: UP remains locked until Pause (N) is pressed.")
-                return False
-            if cmd == "D1" and self.down_locked_until_pause:
-                self.log("DOWN command ignored: DOWN remains locked until Pause (N) is pressed.")
-                return False
+        # 1. Evaluate directional locks
+        if cmd == "U1" and self.up_locked_until_pause:
+            self.log("UP command ignored: UP remains locked until Pause (N) is pressed.")
+            return False
+        if cmd == "D1" and self.down_locked_until_pause:
+            self.log("DOWN command ignored: DOWN remains locked until Pause (N) is pressed.")
+            return False
 
-            # 2. Check if motor is actively moving in the OPPOSITE direction
-            opposing_motion = (self.motion_state == "DOWN" and cmd == "U1") or \
-                            (self.motion_state == "UP" and cmd == "D1")
+        # 2. Check if motor is actively moving in the OPPOSITE direction
+        opposing_motion = (self.motion_state == "DOWN" and cmd == "U1") or \
+                          (self.motion_state == "UP" and cmd == "D1")
 
-            if opposing_motion and self.actuator and self.actuator.is_open:
-                self.log(f"Direction inversion requested ({self.motion_state} -> {'UP' if cmd == 'U1' else 'DOWN'}). Executing multi-stage hardware transition...")
-                
-                # Step A: Send Pause command & explicitly clear local lock flags
-                self.send_actuator_command("N")
-                self.up_locked_until_pause = False
-                self.down_locked_until_pause = False
-                self.motion_state = "PAUSED"
-                
-                # Step B: Hardware settling delay (allow step timers to return to IDLE)
-                time.sleep(0.08)
+        if opposing_motion and self.actuator and self.actuator.is_open:
+            self.log(f"Direction inversion requested ({self.motion_state} -> {'UP' if cmd == 'U1' else 'DOWN'}). Executing multi-stage hardware transition...")
+            
+            # Step A: Send Pause command & explicitly clear local lock flags
+            self.send_actuator_command("N")
+            self.up_locked_until_pause = False
+            self.down_locked_until_pause = False
+            self.motion_state = "PAUSED"
+            
+            # Step B: Hardware settling delay (allow step timers to return to IDLE)
+            time.sleep(0.08)
 
-                # Step C: Re-send speed command through standard actuator pipeline
-                if self.current_commanded_speed_um_min is not None:
-                    cmd_str, _ = self._speed_to_supported_command(self.current_commanded_speed_um_min)
-                    self.send_actuator_command(cmd_str)
-                    time.sleep(0.05)  # Wait for Arduino parsing buffer to clear speed command
+            # Step C: Re-send speed command through standard actuator pipeline
+            if self.current_commanded_speed_um_min is not None:
+                cmd_str, _ = self._speed_to_supported_command(self.current_commanded_speed_um_min)
+                self.send_actuator_command(cmd_str)
+                time.sleep(0.05)  # Wait for Arduino parsing buffer to clear speed command
 
-            # Step D: Dispatch final target direction vector (U1 / D1)
-            return self.send_actuator_command(cmd)
+        # Step D: Dispatch final target direction vector (U1 / D1)
+        return self.send_actuator_command(cmd)
 
     def _apply_command_to_local_state(self, cmd):
         if cmd == "U1":
@@ -886,6 +923,25 @@ class UnifiedHardwareApp:
         r = self.selected_range.get()
         self.speed_entry.delete(0, tk.END)
         self.speed_entry.insert(0, {"S1": "50", "S2": "500", "S3": "20"}[r])
+
+    def _sync_normal_speed_controls_from_current(self):
+        if self.current_commanded_speed_um_min is None:
+            return
+
+        speed_um = float(self.current_commanded_speed_um_min)
+        if speed_um <= 100.0:
+            range_code = "S1"
+            display_val = max(1, min(100, self._round_half_up_positive(speed_um)))
+        elif speed_um <= 1000.0:
+            range_code = "S2"
+            display_val = max(100, min(1000, self._round_half_up_positive(speed_um)))
+        else:
+            range_code = "S3"
+            display_val = max(1, min(45, self._round_half_up_positive(speed_um / 1000.0)))
+
+        self.selected_range.set(range_code)
+        self.speed_entry.delete(0, tk.END)
+        self.speed_entry.insert(0, str(display_val))
 
     def send_speed_command(self):
         val_str = self.speed_entry.get().strip()
@@ -1142,6 +1198,7 @@ class UnifiedHardwareApp:
         self.quintic_mode_active = False
         self.quintic_trajectory = []
         self._set_normal_motion_controls_enabled(True)
+        self._sync_normal_speed_controls_from_current()
         self.btn_enable_quintic.config(state=tk.NORMAL if self.actuator and self.actuator.is_open else tk.DISABLED)
 
         if self._popup_exists():
@@ -1377,14 +1434,54 @@ class UnifiedHardwareApp:
         try:
             trajectory = list(self.quintic_trajectory)
             duration = float(self.quintic_duration_seconds)
+            first_point = trajectory[0]
 
-            if not self._apply_quintic_speed(trajectory[0]):
-                reason = "cancelled" if self.quintic_stop_event.is_set() else "error"
+            if not (self.actuator and self.actuator.is_open):
+                self.log("Quintic aborted: actuator disconnected.")
                 return
 
-            if not self.send_actuator_command(direction_cmd):
-                reason = "error"
-                return
+            # Lock the serial port for the ENTIRE startup sequence so 'P' polling
+            # cannot interleave between N, S..., and U1/D1
+            with self.actuator_lock:
+                self.actuator.reset_input_buffer()
+
+                # 1. Always send N first so firmware is guaranteed to be in IDLE
+                self.actuator.write(b"N\n")
+                self.actuator.flush()
+                self.log("Quintic Handshake [1/3] Sent: N")
+                time.sleep(0.10)
+
+                if self.actuator.in_waiting > 0:
+                    rx = self.actuator.read(self.actuator.in_waiting).decode("ascii", errors="replace").strip()
+                    self.log(f"Quintic Handshake RX after N: {rx!r}")
+
+                # 2. Send initial t=0 speed command
+                init_cmd = first_point["command"]
+                self.actuator.write(f"{init_cmd}\n".encode("utf-8"))
+                self.actuator.flush()
+                self.log(f"Quintic Handshake [2/3] Sent: {init_cmd}")
+                time.sleep(0.10)
+
+                if self.actuator.in_waiting > 0:
+                    rx = self.actuator.read(self.actuator.in_waiting).decode("ascii", errors="replace").strip()
+                    self.log(f"Quintic Handshake RX after {init_cmd}: {rx!r}")
+
+                # 3. Send direction command (U1 or D1)
+                self.actuator.write(f"{direction_cmd}\n".encode("utf-8"))
+                self.actuator.flush()
+                self.log(f"Quintic Handshake [3/3] Sent: {direction_cmd}")
+                time.sleep(0.10)
+
+                if self.actuator.in_waiting > 0:
+                    rx = self.actuator.read(self.actuator.in_waiting).decode("ascii", errors="replace").strip()
+                    self.log(f"Quintic Handshake RX after {direction_cmd}: {rx!r}")
+
+            # Sync local GUI state cleanly after the atomic serial handshake
+            self.current_commanded_speed_um_min = first_point["effective_um_min"]
+            self.up_locked_until_pause = False
+            self.down_locked_until_pause = False
+            self._apply_command_to_local_state(direction_cmd)
+            self.root.after(0, self._update_popup_state)
 
             direction_name = "UP" if direction_cmd == "U1" else "DOWN"
             self.log(f"Quintic ramp running {direction_name}; subsequent updates send S commands only.")
@@ -1835,8 +1932,8 @@ class UnifiedHardwareApp:
             daq_temps = [None] * len(CHANNELS)
             daq_times = [None] * len(CHANNELS)
 
-            # 1. Query PSU via PySerial
-            if self.psu and self.psu.is_open:
+            # 1. Query PSU via PySerial (paused while in Local mode so REM stays off)
+            if self.psu and self.psu.is_open and not self.psu_local_mode:
                 try:
                     t_start_psu = time.perf_counter()
                     
@@ -1954,10 +2051,13 @@ class UnifiedHardwareApp:
                 try:
                     if self.psu_protocol == "SCPI":
                         self._psu_write(self.psu, "OUTP OFF")
-                        self._psu_write(self.psu, "SYST:SET LOC")
+                        time.sleep(0.05)
+                        self._psu_write(self.psu, "SYST:REM:STAT LOC")
                     else:
-                        self._psu_query(self.psu, "OUT 0")
-                        self._psu_query(self.psu, "RMT 0")
+                        self._psu_write(self.psu, "OUT 0")
+                        time.sleep(0.05)
+                        self._psu_write(self.psu, "RMT 0")
+                    time.sleep(0.05)
                     self.psu.close()
                 except Exception:
                     pass
